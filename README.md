@@ -12,7 +12,6 @@
 
 ---
 
-## Быстрый старт
 
 ### 1. Установка
 
@@ -123,9 +122,7 @@ RAG ищет "пустота" в association_index
 | OpenAI | https://api.openai.com/v1 | GPT-4o | $5.00 |
 | OpenAI | https://api.openai.com/v1 | GPT-4o-mini | $0.15 |
 
-*Groq — бесплатно, но с ограничениями
-
-**Рекомендация:** Together AI с Llama 3.1 70B — оптимальное соотношение цена/качество.
+*Groq — БЕСПЛАТНО
 
 ---
 
@@ -148,7 +145,7 @@ books/
 python src/index_books.py
 ```
 
-**Рекомендуемые книги (3-4 для MVP):**
+**Рекомендуемые книги:**
 
 | Автор | Книга |
 |-------|-------|
@@ -213,7 +210,6 @@ existential-therapist-bot/
 │   ├── convert_dataset.py   # Конвертер датасета
 │   └── index_books.py       # Индексация книг
 ├── tests/                   # Тесты
-├── .env                     # Конфигурация (не коммитить!)
 ├── .env.example             # Пример конфигурации
 ├── requirements.txt         # Зависимости
 ├── setup.py                 # Автоматическая настройка
