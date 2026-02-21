@@ -14,7 +14,7 @@ Thank you for your interest in contributing to this project! This document provi
 ## 🚀 Getting Started
 
 1. Fork the repository
-2. Clone your fork: `git clone https://github.com/your-username/existential-therapist-bot.git`
+2. Clone your fork: `git clone https://github.com/WhatAMistake/roi.git`
 3. Create a virtual environment: `python -m venv venv`
 4. Activate it: `venv\Scripts\activate` (Windows) or `source venv/bin/activate` (Linux/Mac)
 5. Install dependencies: `pip install -r requirements.txt`
