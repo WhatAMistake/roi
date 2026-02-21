@@ -23,7 +23,7 @@ python -m venv venv
 venv\Scripts\activate  # Windows
 
 # Установите зависимости
-# Используйте файл с зависимостями в папке `docs` (включает langdetect)
+# Используйте файл с зависимостями в папке `docs`
 pip install -r docs/requirements.txt
 ```
 
@@ -40,14 +40,9 @@ copy .env.example .env
 # Telegram Bot Token (получить у @BotFather)
 TELEGRAM_BOT_TOKEN=123456789:ABCdef...
 
-# Together API (Llama 3.1 70B)
 OPENAI_API_KEY=xxxxxxxxxxxxxxxx
 OPENAI_API_BASE=https://api.together.xyz/v1
 ```
-
-**Как получить ключи:**
-- Telegram: откройте [@BotFather](https://t.me/BotFather) → `/newbot`
-- Together AI: https://api.together.xyz → Settings → API Keys
 
 ### 3. Подготовка данных
 
@@ -72,7 +67,7 @@ python run_telegram.py
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  [ШАГ 1] ДАННЫЕ                                                 │
-│  ├── xlsx (ваш датасет) ──► convert_dataset.py ──► dataset.json │
+│  ├── xlsx (датасет) ──► convert_dataset.py ──► dataset.json │
 │  └── PDF книги ────────► index_books.py ──────► book_chunks.json│
 │                                                                 │
 │  [ШАГ 2] RAG                                                    │
@@ -117,7 +112,7 @@ RAG ищет "пустота" в association_index
 
 | Провайдер | URL | Модель | Цена/1M tokens |
 |-----------|-----|--------|----------------|
-| **Together AI** | https://api.together.xyz/v1 | Llama 3.1 70B | **$0.88** |
+| Together AI | https://api.together.xyz/v1 | Llama 3.1 70B | $0.88 |
 | Groq | https://api.groq.com/openai/v1 | Llama 3.1 70B | Бесплатно* |
 | OpenAI | https://api.openai.com/v1 | GPT-4o | $5.00 |
 | OpenAI | https://api.openai.com/v1 | GPT-4o-mini | $0.15 |
@@ -145,7 +140,7 @@ books/
 python src/index_books.py
 ```
 
-**Рекомендуемые книги:**
+Рекомендуемые книги:
 
 | Автор | Книга |
 |-------|-------|
