@@ -1,26 +1,26 @@
-"""Localization module for Russian and English."""
 from typing import Dict
 
 LOCALES: Dict[str, Dict[str, str]] = {
-
     "ru": {
         "button_assoc": "Анализ ассоциаций",
         "button_analyze": "Анализ истории",
         "button_reset": "Сбросить диалог",
         "button_help": "Помощь",
         "button_cancel": "Отмена",
-        "welcome": "Доброго времени, {name}.\n\nЯ — Рой (или Рои), экзистенциальный терапевт. Помогаю исследовать вопросы смысла, свободы, одиночества и конечности жизни.\n\nВы можете:\n• Просто писать мне о том, что вас беспокоит\n• Использовать анализ ассоциаций (/assoc) — это поможет понять актуальные темы\n• Использовать анализ истории (/analyze) — для глубокого разбора ситуации\n• Попросить метафору вашего состояния (/meta) — когда слов становится слишком много\n\nС чего начнём?",
-        "help": "<b>Экзистенциальный терапевт Рой (Рои)</b>\n\nЯ работаю в традиции Ирвина Ялома и Виктора Франкла.\n\n<b>Что я могу:</b>\n• Слушать и задавать вопросы\n• Помогать исследовать экзистенциальные темы\n• Анализировать ваши ассоциации и подробные истории\n• Создавать экзистенциальные метафоры вашего состояния\n• Анализировать изображения — пришлите фото для экзистенциального отклика\n\n<b>Команды:</b>\n/start — начать диалог\n/reset — сбросить историю\n/assoc — анализ ассоциаций\n/analyze — анализ ситуации\n\n<b>Для особых моментов:</b>\n/void — взгляд в пустоту\n/silence — минута молчания\n/meta — метафора вашего состояния\n/meaning — случайный смысл момента\n\n<b>Служебные методы:</b>\n/feedback — отправить отзыв разработчику\n/switchlang — switch language (ru, en)\n/help — эта справка\n/meaning_where — когда смысл\n\n<i>Важно: я не заменяю профессионального терапевта. Если вы в кризисе — обратитесь к специалисту.</i>",        "reset_confirm": "История диалога сброшена. Начнём сначала?",
+        "welcome": "Доброго времени, {name}.\n\nЯ — Рой (или Рои), экзистенциальный терапевт. Помогаю исследовать вопросы смысла, свободы, одиночества и конечности жизни.\n\nВы можете:\n• Просто писать мне о том, что вас беспокоит\n• Использовать анализ ассоциаций (/assoc) — это поможет понять актуальные темы\n• Использовать анализ истории (/analyze) — для глубокого разбора ситуации\n• Попросить метафору вашего состояния (/meta) — когда слов становится слишком много\n\n• Поддержать проект, если понравится (заглянуть в /help)\n\nС чего начнём?",
+        "help": "<b>Экзистенциальный терапевт Рой (Рои)</b>\n\nЯ работаю в традиции Ирвина Ялома и Виктора Франкла.\n\n<b>Что я могу:</b>\n• Слушать и задавать вопросы\n• Помогать исследовать экзистенциальные темы\n• Анализировать ваши ассоциации и подробные истории\n• Создавать экзистенциальные метафоры вашего состояния\n• Анализировать изображения — пришлите фото для экзистенциального отклика\n\n<b>Команды:</b>\n/start — начать диалог\n/reset — сбросить историю\n/assoc — анализ ассоциаций\n/analyze — анализ ситуации\n\n<b>Для особых моментов:</b>\n/void — взгляд в пустоту\n/silence — минута молчания\n/meta — метафора вашего состояния\n/meaning — случайный смысл момента\n\n<b>Служебные методы:</b>\n/feedback — отправить отзыв разработчику\n/switchlang — switch language (ru, en)\n/help — эта справка\n/meaning_where — когда смысл\n\npay.cloudtips.ru/p/529668cc — отблагодарить\n\n<i>Важно: я не заменяю профессионального терапевта. Если вы в кризисе — обратитесь к специалисту.</i>",        "reset_confirm": "История диалога сброшена. Начнём сначала?",
         "assoc_start": "Давайте исследуем ваши ассоциации.\n\n<b>Подберите ассоциации к слову СВОБОДА (оптимально 5)</b>\n(через запятую или пробел)",
-        "assoc_nonsense_prompt": "<b>Подберите ассоциации к слову БЕССМЫСЛЕННОСТЬ (оптимально 5)</b>",
-        "assoc_solitude_prompt": "<b>Подберите ассоциации к слову ОДИНОЧЕСТВО (оптимально 5)</b>",
-        "assoc_death_prompt": "<b>И наконец, подберите ассоциации к слову СМЕРТЬ (оптимально 5)</b>",
+        "assoc_nonsense_prompt": "<b>Подберите ассоциации к слову БЕССМЫСЛЕННОСТЬ</b>",
+        "assoc_solitude_prompt": "<b>Подберите ассоциации к слову ОДИНОЧЕСТВО</b>",
+        "assoc_death_prompt": "<b>И наконец, подберите ассоциации к слову СМЕРТЬ</b>",
         "assoc_confirm": "✅ {label}: {words}",
         "assoc_summary_intro": "<b>Ваши ассоциации:</b>",
         "analyzing": "Анализирую...",
         "llm_client_uninitialized": "<b>Ошибка генерации ответа:</b> LLM клиент не инициализирован.",
         "image_analysis_failed": "<b>Не удалось проанализировать изображение:</b> {error}",
         "analyze_start": "<b>Экзистенциальный анализ истории</b>\n\nРасскажите мне ситуацию, которая вас беспокоит. Опишите её подробно: что произошло, что вы чувствовали, о чём думали.\n\nЯ попробую найти в ней экзистенциальные темы и дать обратную связь.",
+        "irvin_yalom_story_analysis": "Ты — Ирвин Ялом, экзистенциальный психотерапевт. Проводи глубокий экзистенциальный анализ истории клиента.",
+        "irvin_yalom_assoc_analysis": "Ты — Ирвин Ялом, экзистенциальный психотерапевт. Проводи глубокий экзистенциальный анализ ассоциаций клиента.",
         "image_default_caption": "Проанализируй это изображение с экзистенциальной точки зрения.",
         "analyzing_image": "Смотрю на изображение...",
         "action_cancelled": "Действие отменено. Продолжаем диалог.",
@@ -51,27 +51,30 @@ LOCALES: Dict[str, Dict[str, str]] = {
         "lang_invalid": "Неверный код языка. Доступно: ru, en. Используйте /lang en или /lang ru"
         ,
         "response_instruction_ask": "Инструкция для этого ответа: Задайте ОДИН уточняющий или глубокий вопрос в конце вашего ответа, если это уместно и помогает терапии. Не задавайте несколько вопросов.",
-        "response_instruction_no_ask": "Инструкция для этого ответа: НЕ задавайте уточняющий или следующий вопрос в конце вашего ответа. Предложите отражение и краткое наблюдение вместо этого.",
-        "incorporate_technique": "Если уместно, включите в ответ следующую терапевтическую технику: {tech_desc}",
+        "response_instruction_no_ask": "СТРОГАЯ ИНСТРУКЦИЯ: В этом ответе НЕЛЬЗЯ задавать вопрос. НИКАКИХ вопросов — ни в конце, ни в середине, ни в начале. Только отражение, наблюдение или техника. Запрещено спрашивать 'как вы чувствуете?', 'что вы думаете?', 'может быть...?' и любые другие вопросительные конструкции.",
+
+        "incorporate_technique": "РЕКОМЕНДУЕМАЯ ТЕХНИКА ДЛЯ ЭТОГО ОТВЕТА: {tech_desc}\n\nИспользуй эту технику явно — не просто упомяни, а примени её в ответе. Если техника не подходит к контексту — используй базовое феноменологическое слушание.",
         "rag_context": "Контекст из базы знаний:\n{context}",
         "meta_prompt": "На основе истории нашего диалога и контекста, создай одну глубокую экзистенциальную метафору, которая отражает моё текущее состояние или ситуацию. Метафора должна быть лаконичной (2-3 предложения) и давать пищу для размышлений.",
         "meta_analyzing": "<b>Создаю метафору вашего состояния...</b>",
         "silence_start": "<i>Тишина... (60 секунд)</i>",
         "silence_end": "В этом молчании мы были по-настоящему честны друг с другом. Что вы почувствовали в этой пустоте?",
         "void_msg": "...\n\n<i>«Пустота — это зеркало, в котором мы видим своё отражение, но не узнаём его».</i>",
-        "meaning_prompt": "Ты — экзистенциальный поэт в духе Ирвина Ялома и Виктора Франкла. Придумай один короткий, абсурдный, но глубокий 'смысл жизни' на текущий момент. Избегай клише про 'шепот', 'танцы' и 'мечты'. Используй конкретные, приземленные, даже странные образы. Будь предельно лаконичен (1 предложение). Никаких вступлений.",
-        "meaning_enabled": "Ежедневные смыслы включены. Теперь раз в 24 часа я буду делиться с вами мимолетным смыслом момента.",
-        "meaning_disabled": "Ежедневные смыслы отключены. Я больше не буду тревожить вас ими, пока вы не попросите об этом снова через /meaning_is.",
+        "meaning_prompt": "Поделись одним живым и глубоким наблюдением. СТРОГИЕ ЗАПРЕТЫ: 1) Не начинай с 'Каждый раз', 'Когда мы', 'Помни'. 2) Никаких поучений и советов ('нужно', 'важно', 'не забывайте'). 3) Никаких клише про 'путь к цели' и 'радость момента'. Пиши как человек, который внезапно что-то понял, глядя на мир. Будь краток, точен и каждый раз меняй тему (от быта до мимолетных чувств). Ровно 1 предложение без вступлений.",
+        "meaning_system": "Ты — проницательный наблюдатель, который избегает банальностей и поучений. Твоя задача — зацепить внимание пользователя необычной, но понятной мыслью о жизни, не давая советов.",        "meaning_enabled": "Ежедневные смыслы включены. Теперь раз в 24 часа я буду делиться с вами мимолетным смыслом момента.",        "meaning_disabled": "Ежедневные смыслы отключены. Я больше не буду тревожить вас ими, пока вы не попросите об этом снова через /meaning_is.",
         "error_llm": "Простите, в моих мыслях сейчас туман (ошибка связи). Давайте попробуем вернуться к этому чуть позже?",
         "error_flood": "Я был в глубоком раздумье и пропустил часть ваших слов. О чем из этого нам стоит поговорить сейчас?",
         "feedback_prompt": "Пожалуйста, используйте команду вместе с текстом сообщения.\nНапример: <b>/feedback Спасибо за бота!</b>",
         "feedback_thanks": "Спасибо. Ваше послание отправлено.",
         "feedback_admin_msg": "📩 <b>Новый отзыв от {user}:</b>\n\n{text}",
         "update_notification_header": "<b>Обновление</b>\n\n",
-        "update_notification_footer": ""
+        "update_notification_footer": "",
+        "crisis_support_message": "Слышу тебя. То, что ты сейчас чувствуешь — это очень тяжело.\n\nПрямо сейчас попробуй сделать одно простое действие: выпей стакан воды, сделай несколько медленных вдохов или просто встань и пройдись.\n\nЕсли хочешь — можешь написать разработчику напрямую.",
+        "crisis_contact_dev": "✉️ Написать разработчику",
+        "crisis_feedback_sent": "Сообщение отправлено. Разработчик получит его в ближайшее время.",
+        "crisis_admin_contact": "🆘 <b>ПОЛЬЗОВАТЕЛЬ ЗАПРОСИЛ СВЯЗЬ С РАЗРАБОТЧИКОМ (кризисная ситуация)</b>\n\n<b>User ID:</b> {user_id}\n<b>Username:</b> @{username}"
 
     },
-
     "en": {        
         "button_assoc": "Association analysis",
         "button_analyze": "Story analysis",
@@ -92,6 +95,8 @@ LOCALES: Dict[str, Dict[str, str]] = {
         "llm_client_uninitialized": "<b>Failed to generate response:</b> LLM client not initialized.",
         "image_analysis_failed": "<b>Failed to analyze image:</b> {error}",
         "analyze_start": "<b>Existential story analysis</b>\n\nTell me a situation that troubles you. Describe it in detail: what happened, what you felt, what you thought.\n\nI'll try to find existential themes and give feedback.",
+        "irvin_yalom_story_analysis": "You are Irvin Yalom, an existential psychotherapist. Conduct a deep existential analysis of the client's story.",
+        "irvin_yalom_assoc_analysis": "You are Irvin Yalom, an existential psychotherapist. Conduct a deep existential analysis of the client's associations.",
         "image_default_caption": "Analyze this image from an existential perspective.",
         "analyzing_image": "Looking at the image...",
         "action_cancelled": "Action cancelled. Back to dialog.",
@@ -122,17 +127,17 @@ LOCALES: Dict[str, Dict[str, str]] = {
         "lang_invalid": "Invalid language code. Available: ru, en. Use /lang en or /lang ru"
         ,
         "response_instruction_ask": "Instruction for this response: Ask ONE clarifying or deep question at the end of your reply if it is relevant and helps the therapy. Do not ask multiple questions.",
-        "response_instruction_no_ask": "Instruction for this response: Do NOT ask a clarifying or follow-up question at the end of your reply. Offer reflection and a concise observation instead.",
-        "incorporate_technique": "If appropriate, incorporate the following therapeutic technique into your reply: {tech_desc}",
+        "response_instruction_no_ask": "STRICT INSTRUCTION: In this response you must NOT ask ANY question. NO questions at all — not at the end, not in the middle, not at the beginning. Only reflection, observation, or technique. Forbidden to ask 'how do you feel?', 'what do you think?', 'perhaps...?' or any other question-like constructions.",
+
+        "incorporate_technique": "RECOMMENDED TECHNIQUE FOR THIS RESPONSE: {tech_desc}\n\nUse this technique explicitly — don't just mention it, apply it in your response. If the technique doesn't fit the context, use basic phenomenological listening.",
         "rag_context": "Context from knowledge base:\n{context}",
         "meta_prompt": "Based on our conversation history and context, create one deep existential metaphor that reflects my current state or situation. The metaphor should be concise (2-3 sentences) and provide food for thought.",
         "meta_analyzing": "<b>Creating a metaphor for your state...</b>",
         "silence_start": "<i>Silence... (60 seconds)</i>",
         "silence_end": "In this silence, we were truly honest with each other. What did you feel in this void?",
         "void_msg": "...\n\n<i>\"Emptiness is a mirror in which we see our reflection but do not recognize it.\"</i>",
-        "meaning_prompt": "You are an existential poet in the spirit of Irvin Yalom and Viktor Frankl. Invent one short, absurd, but deep 'meaning of life' for the current moment. Avoid clichés about 'whispers', 'dances', and 'dreams'. Use concrete, grounded, even strange imagery. Be extremely concise (1 sentence). No introductions.",
-        "meaning_enabled": "Daily meanings enabled. Now, once every 24 hours, I will share a fleeting meaning of the moment with you.",
-        "meaning_disabled": "Daily meanings disabled. I will no longer disturb you with them until you ask again via /meaning_is.",
+        "meaning_prompt": "Share one vivid and deep observation. STRICT PROHIBITIONS: 1) Do not start with 'Every time', 'When we', 'Remember'. 2) No preaching or advice ('should', 'important', 'don't forget'). 3) No clichés about 'the journey' or 'joy of the moment'. Write like a person who suddenly realized something while looking at the world. Be concise, precise, and change the theme every time (from everyday life to fleeting feelings). Exactly 1 sentence without introductions.",
+        "meaning_system": "You are a perceptive observer who avoids banalities and preaching. Your task is to catch the user's attention with an unusual but understandable thought about life, without giving advice.",        "meaning_enabled": "Daily meanings enabled. Now, once every 24 hours, I will share a fleeting meaning of the moment with you.",        "meaning_disabled": "Daily meanings disabled. I will no longer disturb you with them until you ask again via /meaning_is.",
         "error_llm": "Forgive me, my thoughts are clouded right now (connection error). Shall we try to return to this a bit later?",
         "error_flood": "I was in deep contemplation and missed some of your words. Which of these should we talk about now?",
         "feedback_prompt": "Please use the command along with your message text.\nFor example: <b>/feedback Thank you for the bot!</b>",
@@ -146,7 +151,6 @@ LOCALES: Dict[str, Dict[str, str]] = {
 
 
 def t(code: str, key: str, **kwargs) -> str:
-    """Get localized string by language code and key."""
     locale = LOCALES.get(code, LOCALES.get("en"))
     template = locale.get(key, LOCALES["en"].get(key, key))
     try:

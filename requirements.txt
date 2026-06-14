@@ -2,6 +2,10 @@
 python-dotenv>=1.0.0
 pydantic>=2.0.0
 
+# Security (user data encryption)
+cryptography>=42.0.0
+
+
 # Data processing
 pandas>=2.0.0
 openpyxl>=3.1.0
@@ -16,7 +20,7 @@ anthropic>=0.18.0
 langdetect>=1.0.9
 
 # RAG
-chromadb>=0.4.0
+qdrant-client>=1.7.0
 sentence-transformers>=2.2.0
 
 # Telegram bot

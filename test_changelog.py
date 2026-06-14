@@ -45,17 +45,30 @@ TRACKED_FILES = [
 ]
 
 CHANGELOG_COMMENTS_RU = [
-    "Улучшили то, что можно улучшить.",
+    "Бот обновился — как и всё живое.",
+    "Мы улучшили то, что можно улучшить.",
+    "Новые возможности для исследования себя.",
+    "Обновление: теперь работает ещё лучше.",
+    "Время перемен — бот растёт вместе с нами.",
+    "Исправлено то, что мешало погружению.",
+    "Код эволюционирует — смысл остаётся.",
     "Обновление: шаг к более глубокому диалогу.",
-    "Всё течёт, всё меняется.",
+    "Техника служит терапии — мы её подправили.",
+    "Всё течёт, всё меняется. Включая этого бота.",
 ]
 
 CHANGELOG_COMMENTS_EN = [
+    "The bot has evolved — as all living things do.",
     "We've improved what could be improved.",
+    "New possibilities for self-exploration.",
+    "Update: now works even better.",
+    "Time for change — the bot grows with us.",
+    "Fixed what was getting in the way of immersion.",
+    "Code evolves — meaning remains.",
     "Update: a step toward deeper dialogue.",
-    "Everything flows, everything changes.",
+    "Technology serves therapy — we've tuned it.",
+    "Everything flows, everything changes. Including this bot.",
 ]
-
 
 EXISTING_COMMANDS = [
     "start", "help", "lang", "switchlang", "reset", "assoc", "analyze",
@@ -251,71 +264,60 @@ def generate_changelog_with_llm(therapist_bot, changed_files, project_root, lang
     diff_content = "\n\n".join(diff_sections)
     
     if lang == "ru":
-        prompt = f"""Проанализируй изменения и напиши краткий changelog.
+        prompt = f"""Ты — product manager экзистенциального терапевт-бота. 
+Пиши changelog для пользователей в тёплом, человечном стиле.
 
-Что искать:
-- Только РЕАЛЬНЫЕ изменения из кода (не придумывай)
-- Исправленные баги
-- Улучшения: шифрование, защита от сбоев, стабильность
+АНАЛИЗИРУЙ КОД и выяви что изменилось для ПОЛЬЗОВАТЕЛЯ:
+- Новые команды терапии (функции cmd_*) — как они помогают в работе с собой
+- Улучшения существующих команд — что стало лучше в диалоге
+- Исправленные баги — что чинили, чтобы не мешало разговору
+- Новые возможности — как это поможет в исследовании себя
 
 ПРАВИЛА:
-1. Пиши простым языком, без технических деталей
-2. Только 1-3 пункта, но лучше 1 точный, чем 3 придуманных
-3. Формат: "- Что изменилось"
-4. Без вступлений
-5. НЕ упоминай функции с "_", библиотеки, технические термины
-6. НЕ ПРИДУМЫВАЙ — если не уверен, пропусти пункт
-7. НИ В КОЕМ СЛУЧАЕ НЕ упоминай админские команды
-8. Примеры: "Исправлена ошибка при сохранении", "Добавлено шифрование данных"
-9. Если в коде нет явных изменений — напиши только: "Внутренние улучшения"
-
-
-Существующие команды: /start, /help, /lang, /switchlang, /reset, /assoc, /analyze, /meta, /silence, /void, /meaning, /meaning_is, /meaning_gone, /meaning_where, /look, /feedback, /stats, /askprob, /recover, /saveall, /dumpall
-
-АДМИНСКИЕ (не упоминать): /look, /recover, /saveall, /dumpall, /admin
+1. Пиши ТОЛЬКО о реальных изменениях в коде ниже
+2. НЕ придумывай команды или фичи которых нет
+3. Пиши простым языком, как для друга, не для программиста
+4. Используй тёплый, эмпатичный тон (в духе Ирвина Ялома)
+5. Максимум 4-5 пунктов, только значимое
+6. Формат: "- [Краткое название]: что изменилось и зачем это пользователю"
+7. Без повторов в начале пунктов, каждый пункт должен быть уникальным
+8. НЕ добавляй никаких заключительных фраз типа "Спасибо", "Благодарим", "С уважением"
 
 Изменённые файлы:
-
 {diff_content}
 
-Напиши changelog на русском."""
+Напиши changelog на русском. Будь конкретным, но сохраняй тёплый, человечный тон."""
     else:
-        prompt = f"""Analyze changes and write a brief changelog.
+        prompt = f"""You are a product manager for an existential therapist bot.
+Write a changelog for users in a warm, human style.
 
-Look for:
-- Only REAL changes from code (do not invent)
-- Fixed bugs
-- Improvements: encryption, crash protection, stability
+ANALYZE THE CODE and identify what changed for USERS:
+- New therapy commands (cmd_* functions) — how they help with self-work
+- Improvements to existing commands — what got better in the dialogue
+- Fixed bugs — what was repaired to not interrupt the conversation
+- New features — how this helps in self-exploration
 
 RULES:
-1. Write in plain language, no technical details
-2. Only 1-3 items, but 1 accurate is better than 3 invented
-3. Format: "- What changed"
-4. No introductions
-5. DO NOT mention functions starting with "_", libraries, technical terms
-6. DO NOT INVENT — if unsure, skip the item
-7. NEVER mention admin-only commands
-8. Examples: "Fixed save error", "Added data encryption"
-9. If no clear changes in code — write only: "Internal improvements"
-
-
-Existing commands: /start, /help, /lang, /switchlang, /reset, /assoc, /analyze, /meta, /silence, /void, /meaning, /meaning_is, /meaning_gone, /meaning_where, /look, /feedback, /stats, /askprob, /recover, /saveall, /dumpall
-
-ADMIN (never mention): /look, /recover, /saveall, /dumpall, /admin
+1. Write ONLY about REAL changes in the code below
+2. DO NOT invent commands or features that don't exist
+3. Write in plain language, like for a friend, not a programmer
+4. Use warm, empathetic tone (in the spirit of Irvin Yalom)
+5. Maximum 4-5 items, significant changes only
+6. Format: "- [Brief name]: what changed and why it matters to users"
+7. No repetitive patterns at the start, each item should be unique
+8. DO NOT add any closing remarks like "Thanks", "Thank you", "Best regards"
 
 Changed files:
-
 {diff_content}
 
-Write changelog in English."""
-
+Write changelog in English. Be specific but keep a warm, human tone."""
 
     try:
         if therapist_bot and therapist_bot.client:
             response = therapist_bot.client.chat.completions.create(
                 model=therapist_bot.model,
                 messages=[
-                    {"role": "system", "content": "Write very briefly, in simple words. No technical details, no library names. Easy to understand for regular users." if lang == "en" else "Пиши очень кратко, простыми словами. Без технических деталей, без названий библиотек. Максимально понятно для обычного пользователя."},
+                    {"role": "system", "content": "You write brief, honest release notes. Focus on user value. Warm tone." if lang == "en" else "Ты пишешь краткие, честные release notes. Фокус на пользе для пользователя. Тёплый тон."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,

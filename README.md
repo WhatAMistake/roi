@@ -4,14 +4,15 @@
 
 ## Возможности
 
-- Экзистенциальный подход — работа с четырьмя данностями (смерть, свобода, одиночество, бессмысленность)
-- RAG — интеграция с корпусом знаний и датасетом ассоциаций
-- Анализ ассоциаций — сопоставление с паттернами из датасета
-- Многоязычность — русский и английский
-- Telegram бот — удобный интерфейс в мессенджере
+- 🧠 **Экзистенциальный подход** — работа с четырьмя данностями (смерть, свобода, одиночество, бессмысленность)
+- 📚 **RAG** — интеграция с корпусом знаний и датасетом ассоциаций
+- 🔍 **Анализ ассоциаций** — сопоставление с паттернами из датасета
+- 🌐 **Многоязычность** — русский и английский
+- 📱 **Telegram бот** — удобный интерфейс в мессенджере
 
 ---
 
+## Быстрый старт
 
 ### 1. Установка
 
@@ -23,7 +24,7 @@ python -m venv venv
 venv\Scripts\activate  # Windows
 
 # Установите зависимости
-# Используйте файл с зависимостями в папке `docs`
+# Используйте файл с зависимостями в папке `docs` (включает langdetect)
 pip install -r docs/requirements.txt
 ```
 
@@ -40,9 +41,14 @@ copy .env.example .env
 # Telegram Bot Token (получить у @BotFather)
 TELEGRAM_BOT_TOKEN=123456789:ABCdef...
 
+# Together API (Llama 3.1 70B)
 OPENAI_API_KEY=xxxxxxxxxxxxxxxx
 OPENAI_API_BASE=https://api.together.xyz/v1
 ```
+
+**Как получить ключи:**
+- Telegram: откройте [@BotFather](https://t.me/BotFather) → `/newbot`
+- Together AI: https://api.together.xyz → Settings → API Keys
 
 ### 3. Подготовка данных
 
@@ -67,7 +73,7 @@ python run_telegram.py
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  [ШАГ 1] ДАННЫЕ                                                 │
-│  ├── xlsx (датасет) ──► convert_dataset.py ──► dataset.json │
+│  ├── xlsx (ваш датасет) ──► convert_dataset.py ──► dataset.json │
 │  └── PDF книги ────────► index_books.py ──────► book_chunks.json│
 │                                                                 │
 │  [ШАГ 2] RAG                                                    │
@@ -112,12 +118,14 @@ RAG ищет "пустота" в association_index
 
 | Провайдер | URL | Модель | Цена/1M tokens |
 |-----------|-----|--------|----------------|
-| Together AI | https://api.together.xyz/v1 | Llama 3.1 70B | $0.88 |
+| **Together AI** | https://api.together.xyz/v1 | Llama 3.1 70B | **$0.88** |
 | Groq | https://api.groq.com/openai/v1 | Llama 3.1 70B | Бесплатно* |
 | OpenAI | https://api.openai.com/v1 | GPT-4o | $5.00 |
 | OpenAI | https://api.openai.com/v1 | GPT-4o-mini | $0.15 |
 
-*Groq — БЕСПЛАТНО
+*Groq — бесплатно, но с ограничениями по速率
+
+**Рекомендация:** Together AI с Llama 3.1 70B — оптимальное соотношение цена/качество.
 
 ---
 
@@ -140,7 +148,7 @@ books/
 python src/index_books.py
 ```
 
-Рекомендуемые книги:
+**Рекомендуемые книги (3-4 для MVP):**
 
 | Автор | Книга |
 |-------|-------|
@@ -159,28 +167,15 @@ python src/index_books.py
 | `/help` | Справка |
 | `/reset` | Сбросить историю |
 | `/assoc` | Анализ ассоциаций (5×4 слова) |
-| `/analyze` | Анализ истории/ситуации |
-| `/meta` | Метафора вашего состояния |
-| `/silence` | Минута молчания |
-| `/void` | Взгляд в пустоту |
-| `/meaning` | Случайный смысл момента |
-| `/meaning_is` | Включить ежедневные смыслы |
-| `/meaning_gone` | Отключить ежедневные смыслы |
-| `/feedback <текст>` | Отправить отзыв |
 
-Настройки:
+Дополнительные команды:
 
 | Команда | Описание |
 |---------|----------|
-| `/lang <en\|ru>` | Установить язык интерфейса |
-| `/askprob <0.0-1.0\|reset>` | Вероятность задавания вопроса |
-| `/switchlang` | Переключить язык (ru/en) |
+| `/lang <en|ru>` | Принудительно установить язык интерфейса и system prompt |
+| `/askprob <0.0-1.0|reset>` | Установить вероятность того, что бот задаст уточняющий вопрос (локально для вас). `reset` — вернуть глобальное значение |
 
-Медиа:
-- Отправьте фото — бот даст экзистенциальный отклик
-- Отправьте голосовое — бот распознает и ответит
-- Отправьте стикер — бот отреагирует на эмоцию
-
+Как отправить изображение: пришлите фото — бот обработает его и даст экзистенциальный отклик.
 
 ---
 
@@ -188,30 +183,30 @@ python src/index_books.py
 
 ```
 existential-therapist-bot/
-├── books/                   # PDF книги (пользователь добавляет сам)
+├── books/                   # PDF книги
 ├── data/                    # Индексы (создаются автоматически)
 │   ├── dataset.json
 │   ├── association_index.json
 │   ├── rag_chunks.json
+│   ├── book_chunks.json
 │   └── chromadb/
-├── docs/                    # Документация
-├── prompts/                 # System prompts (ru/en)
-├── scripts/                 # Вспомогательные скрипты
-├── src/                     # Исходный код
-│   ├── telegram_bot.py      # Telegram интерфейс
-│   ├── therapist_bot.py     # Логика терапии
+├── docs/
+│   └── TOGETHER_API.md      # Инструкция по Together API
+├── prompts/
+│   └── system_prompt.md     # Промпт терапевта
+├── src/
+│   ├── convert_dataset.py   # xlsx → JSON
+│   ├── index_books.py       # PDF → RAG
 │   ├── rag.py               # RAG pipeline
-│   ├── i18n.py              # Локализация
-│   ├── convert_dataset.py   # Конвертер датасета
-│   └── index_books.py       # Индексация книг
-├── tests/                   # Тесты
-├── .env.example             # Пример конфигурации
-├── requirements.txt         # Зависимости
+│   ├── therapist_bot.py     # Логика бота
+│   └── telegram_bot.py      # Telegram интерфейс
+├── .env                     # Конфигурация (не коммитить!)
+├── .env.example
+├── requirements.txt
 ├── setup.py                 # Автоматическая настройка
-├── run_telegram.py          # Точка входа для Telegram
-└── run.py                   # CLI версия
+├── run.py                   # CLI версия
+└── run_telegram.py          # Telegram версия
 ```
-
 
 ---
 
@@ -227,4 +222,4 @@ existential-therapist-bot/
 
 ## Лицензия
 
-MIT
+MIT| Продакшн | Llama 3.1 70B | Качество понимания |

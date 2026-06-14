@@ -63,3 +63,7 @@ books/*.pdf
 # Backup files
 data/code_backup/
 *.bak
+.env
+user_prefs
+.env
+user_prefs.json
