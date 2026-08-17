@@ -5,6 +5,9 @@ Telegram бот для экзистенциальной терапии.
 import os
 import asyncio
 import html
+import re
+import threading
+import time
 from pathlib import Path
 from typing import Optional
 from datetime import datetime
@@ -102,10 +105,42 @@ try:
 except ImportError:
     AIogram_AVAILABLE = False
     print("aiogram не установлен. Установите: pip install aiogram")
-    # Define dummy types to avoid NameError
-    ReplyKeyboardMarkup = None
-    KeyboardButton = None
-    ReplyKeyboardBuilder = None
+    # Define dummy types to avoid NameError on import/annotations
+    class _DummyAiogramTypes:
+        Message = object
+
+    class _DummyF:
+        text = voice = photo = sticker = None
+
+    class _DummyKeyboardButton:
+        def __init__(self, text: str = ""):
+            self.text = text
+
+    class _DummyMarkup:
+        def __init__(self, buttons=None, resize_keyboard: bool = True):
+            self.buttons = buttons or []
+            self.resize_keyboard = resize_keyboard
+
+    class _DummyReplyKeyboardBuilder:
+        def __init__(self):
+            self._buttons = []
+
+        def add(self, *buttons):
+            self._buttons.extend(buttons)
+            return self
+
+        def adjust(self, *args, **kwargs):
+            return self
+
+        def as_markup(self, resize_keyboard: bool = True):
+            return _DummyMarkup(self._buttons, resize_keyboard=resize_keyboard)
+
+    types = _DummyAiogramTypes()
+    F = _DummyF()
+    Bot = Dispatcher = Command = None
+    ReplyKeyboardMarkup = _DummyMarkup
+    KeyboardButton = _DummyKeyboardButton
+    ReplyKeyboardBuilder = _DummyReplyKeyboardBuilder
 
 from therapist_bot import ExistentialTherapistBot
 from lang_utils import detect_language
@@ -147,6 +182,8 @@ def strip_markdown(text: str) -> str:
 import sys
 # Import init_cache functionality for auto-updating after restart
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+# Add workspace root so `app` package is importable when launched via run_telegram.py
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from init_code_cache import init_cache
 
 # Default language when nothing is detected or user's Telegram locale is unsupported
@@ -160,7 +197,7 @@ def get_main_keyboard(lang: str = "ru") -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
     builder.add(KeyboardButton(text=t(lang, "button_assoc")))
     builder.add(KeyboardButton(text=t(lang, "button_analyze")))
-    builder.add(KeyboardButton(text=t(lang, "button_reset")))
+    builder.add(KeyboardButton(text=t(lang, "button_filmframe")))
     builder.add(KeyboardButton(text=t(lang, "button_help")))
     builder.adjust(2)
     return builder.as_markup(resize_keyboard=True)
@@ -170,6 +207,26 @@ def get_cancel_keyboard(lang: str = "ru") -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
     builder.add(KeyboardButton(text=t(lang, "button_cancel")))
     return builder.as_markup(resize_keyboard=True)
+
+
+def get_update_confirm_keyboard() -> ReplyKeyboardMarkup:
+    """Admin keyboard for update changelog confirmation."""
+    builder = ReplyKeyboardBuilder()
+    builder.add(KeyboardButton(text="✅ Да"))
+    builder.add(KeyboardButton(text="✏️ Править"))
+    builder.add(KeyboardButton(text="❌ Нет"))
+    builder.adjust(3)
+    return builder.as_markup(resize_keyboard=True)
+
+
+_UPDATE_CONFIRM_YES = {"да", "yes", "д", "y", "✅ да", "✅"}
+_UPDATE_CONFIRM_EDIT = {
+    "edit", "править", "изменить", "редакт", "редактирование",
+    "✏️ править", "✏️", "правка",
+}
+_UPDATE_CONFIRM_NO = {
+    "нет", "no", "н", "n", "cancel", "отмена", "❌ нет", "❌",
+}
 
 
 class TelegramTherapistBot:
@@ -197,6 +254,9 @@ class TelegramTherapistBot:
         self.bot = Bot(token=telegram_token)
         self.dp = Dispatcher()
         
+        # Filmframe state
+        self.filmframe_state: dict[int, dict] = {}
+
         # Хранилище сессий (user_id -> therapist_bot)
         self.sessions: dict[int, ExistentialTherapistBot] = {}
         
@@ -739,12 +799,12 @@ class TelegramTherapistBot:
         async def btn_analyze_en(message: types.Message):
             await self._handle_analyze_start(message)
         
-        @self.dp.message(F.text == "Сбросить диалог")
-        async def btn_reset(message: types.Message):
-            await self._handle_reset(message)
-        @self.dp.message(F.text == t('en', 'button_reset'))
-        async def btn_reset_en(message: types.Message):
-            await self._handle_reset(message)
+        @self.dp.message(F.text == "Снимок на плёнку")
+        async def btn_filmframe(message: types.Message):
+            await self._handle_meta(message)
+        @self.dp.message(F.text == t('en', 'button_filmframe'))
+        async def btn_filmframe_en(message: types.Message):
+            await self._handle_meta(message)
         
         @self.dp.message(F.text == "Помощь")
         async def btn_help(message: types.Message):
@@ -796,8 +856,12 @@ class TelegramTherapistBot:
             response = therapist.generate_response(prompt, temporary_system_instruction=prompt, use_analysis_model=True)
             await message.answer(response)
 
-        @self.dp.message(Command("meta"))
-        async def cmd_meta(message: types.Message):
+        @self.dp.message(Command("shoot"))
+        async def cmd_shoot(message: types.Message):
+            await self._handle_meta(message)
+
+        @self.dp.message(Command("remarque"))
+        async def cmd_remarque(message: types.Message):
             user_id = message.from_user.id
             lang = self.user_langs.get(user_id, DEFAULT_LANG)
             
@@ -836,26 +900,8 @@ class TelegramTherapistBot:
 
         @self.dp.message(Command("void"))
         async def cmd_void(message: types.Message):
-            user_id = message.from_user.id
-            lang = self.user_langs.get(user_id, DEFAULT_LANG)
-            # Отправляем много пустых символов (HTML-пробелы) для эффекта большой пустоты
-            # Расширенная версия - широкие строки для визуального эффекта пустоты
-            try:
-                # 1. Попытка с символом U+2800 (Braille Pattern Blank) - расширенная ширина
-                wide_line = "⠀" * 25  # 25 невидимых символов в строке
-                void_text = f"{wide_line}\n{wide_line}\n{wide_line}\n{wide_line}\n{wide_line}"
-                await message.answer(void_text)
-            except Exception:
-                try:
-                    # 2. Попытка с символом U+3164 (Hangul Filler) - расширенная ширина
-                    wide_line = "ㅤ" * 25  # 25 невидимых символов в строке
-                    void_text = f"{wide_line}\n{wide_line}\n{wide_line}\n{wide_line}\n{wide_line}"
-                    await message.answer(void_text)
-                except Exception:
-                    # Fallback если пустое сообщение не проходит
-                    await message.answer("...")            
-            await asyncio.sleep(3)
-            await message.answer(t(lang, "void_msg"), parse_mode="HTML")
+            # Static effect only — never route through chat streaming.
+            await self._handle_void(message)
 
         @self.dp.message(Command("meaning"))
         async def cmd_meaning(message: types.Message):
@@ -1118,10 +1164,66 @@ class TelegramTherapistBot:
             f"Доминирующая данность: {safe_dominant}",
             "",
             "<b>Ревью:</b>",
-            f"{safe_summary[:1000]}{'...' if len(safe_summary) > 1000 else ''}",
+            f"{safe_summary[:1500]}{'...' if len(safe_summary) > 1500 else ''}",
         ]
 
         await message.answer("\n".join(summary_lines), parse_mode="HTML")
+
+        # TXT dump of recent messages (if any)
+        if not target_recent_messages:
+            await message.answer("Нет сохранённых сообщений для этого пользователя.")
+            return
+
+        now = datetime.now()
+        username_str = f"@{target_username}" if target_username and target_username != "—" else "—"
+        txt_lines = [
+            "USER RECENT MESSAGES EXPORT",
+            f"generated_at={now.isoformat()}",
+            f"user_id={target_user_id}",
+            f"username={username_str}",
+            f"lang={target_lang}",
+            f"messages_count={history_count}",
+            f"dominant_given={dominant}",
+            "",
+            "--- MESSAGES (oldest -> newest) ---",
+            "",
+        ]
+
+        for i, msg in enumerate(target_recent_messages[-16:], start=1):
+            role = msg.get("role", "unknown")
+            content = (msg.get("content") or "").replace("\r\n", "\n")
+            ts = msg.get("timestamp", "—")
+            role_label = "USER" if role == "user" else ("ASSISTANT" if role == "assistant" else role.upper())
+            txt_lines.append(f"[{i}] {ts} | {role_label}")
+            txt_lines.append(content)
+            txt_lines.append("")
+
+        if saved_summary and not str(saved_summary).startswith("Ошибка генерации:"):
+            txt_lines.extend([
+                "--- REVIEW ---",
+                "",
+                str(saved_summary),
+                "",
+            ])
+
+        export_dir = Path(__file__).parent.parent / "data"
+        export_dir.mkdir(exist_ok=True)
+        export_path = export_dir / f"look_{target_user_id}_{now.strftime('%Y%m%d_%H%M%S')}.txt"
+
+        try:
+            export_path.write_text("\n".join(txt_lines), encoding="utf-8")
+            await message.answer_document(
+                types.FSInputFile(str(export_path)),
+                caption=f"📄 Последние {history_count} сообщений пользователя {target_user_id}",
+            )
+        except Exception as e:
+            await message.answer(f"Не удалось отправить TXT с сообщениями: {e}")
+        finally:
+            try:
+                if export_path.exists():
+                    export_path.unlink()
+            except Exception:
+                pass
 
 
     async def _handle_admin(self, message: types.Message):
@@ -1213,6 +1315,159 @@ class TelegramTherapistBot:
         
         await status_msg.edit_text("\n".join(report_lines), parse_mode="HTML")
 
+    def _clear_pending_update(self, admin_id: Optional[int] = None) -> None:
+        """Drop pending update changelogs and leave the update-confirm flow."""
+        if hasattr(self, "pending_update_changelogs"):
+            del self.pending_update_changelogs
+        target_id = admin_id if admin_id is not None else self.admin_id
+        if self.user_states.get(target_id, "").startswith("update_"):
+            self.user_states[target_id] = "chat"
+
+    def _format_update_preview(self, changelogs: dict) -> str:
+        """Build HTML preview of RU/EN changelogs for admin confirmation."""
+        preview_limit = 1200
+        changelog_ru = (changelogs or {}).get("ru") or ""
+        changelog_en = (changelogs or {}).get("en") or ""
+
+        def _clip(text: str) -> str:
+            if not text:
+                return "—"
+            safe = html.escape(text)
+            if len(text) > preview_limit:
+                return html.escape(text[:preview_limit]) + "..."
+            return safe
+
+        return "\n".join([
+            "📋 <b>Предпросмотр обновления</b>",
+            "",
+            f"Получателей: <b>{len(self.user_langs)}</b>",
+            "",
+            "<b>RU:</b>",
+            _clip(changelog_ru),
+            "",
+            "<b>EN:</b>",
+            _clip(changelog_en),
+            "",
+            "Отправить?",
+            "• <b>да</b> — разослать как есть",
+            "• <b>править</b> — отредактировать RU, затем EN",
+            "• <b>нет</b> — отменить рассылку",
+        ])
+
+    async def _send_update_preview(self, chat_id: int, changelogs: dict) -> None:
+        """Send update preview and put admin into confirmation state."""
+        self.pending_update_changelogs = {
+            "ru": (changelogs or {}).get("ru") or "",
+            "en": (changelogs or {}).get("en") or "",
+        }
+        self.user_states[chat_id] = "update_confirm"
+        await self.send_long_message(
+            chat_id,
+            self._format_update_preview(self.pending_update_changelogs),
+            parse_mode="HTML",
+            reply_markup=get_update_confirm_keyboard(),
+        )
+
+    async def _start_update_edit(self, message: types.Message) -> None:
+        """Begin bilingual changelog editing: RU first, then EN."""
+        user_id = message.from_user.id
+        changelogs = getattr(self, "pending_update_changelogs", None)
+        if not changelogs:
+            self.user_states[user_id] = "chat"
+            await message.answer(
+                "Нет черновика обновления для редактирования.",
+                reply_markup=get_main_keyboard(self.user_langs.get(user_id, DEFAULT_LANG)),
+            )
+            return
+
+        self.user_states[user_id] = "update_edit_ru"
+        current_ru = changelogs.get("ru") or "—"
+        await message.answer(
+            "✏️ <b>Редактирование changelog (RU)</b>\n\n"
+            "Отправьте полный русский текст одним сообщением.\n"
+            "Текущая версия:",
+            parse_mode="HTML",
+            reply_markup=get_cancel_keyboard("ru"),
+        )
+        await self.send_long_message(user_id, current_ru)
+
+    async def _handle_update_confirm_input(self, message: types.Message, text: str) -> None:
+        """Handle yes / edit / no while an update broadcast is pending."""
+        user_id = message.from_user.id
+        choice = (text or "").strip().lower()
+
+        if choice in _UPDATE_CONFIRM_YES:
+            await message.answer(
+                "✅ Начинаю рассылку обновлений...",
+                reply_markup=get_main_keyboard(self.user_langs.get(user_id, DEFAULT_LANG)),
+            )
+            await self._process_update_broadcast()
+            return
+
+        if choice in _UPDATE_CONFIRM_EDIT:
+            await self._start_update_edit(message)
+            return
+
+        if choice in _UPDATE_CONFIRM_NO:
+            self._clear_pending_update(user_id)
+            await message.answer(
+                "❌ Рассылка обновлений отменена",
+                reply_markup=get_main_keyboard(self.user_langs.get(user_id, DEFAULT_LANG)),
+            )
+            return
+
+        await message.answer(
+            "Ответьте <b>да</b>, <b>править</b> или <b>нет</b>.",
+            parse_mode="HTML",
+            reply_markup=get_update_confirm_keyboard(),
+        )
+
+    async def _handle_update_edit_input(self, message: types.Message, state: str, text: str) -> None:
+        """Save edited RU/EN changelog text and continue the flow."""
+        user_id = message.from_user.id
+        if not hasattr(self, "pending_update_changelogs"):
+            self.user_states[user_id] = "chat"
+            await message.answer(
+                "Черновик обновления уже неактуален.",
+                reply_markup=get_main_keyboard(self.user_langs.get(user_id, DEFAULT_LANG)),
+            )
+            return
+
+        edited = (text or "").strip()
+        if not edited:
+            await message.answer(
+                "Текст не может быть пустым. Пришлите полный changelog или нажмите отмену.",
+                reply_markup=get_cancel_keyboard("ru"),
+            )
+            return
+
+        if len(edited) > 3500:
+            await message.answer(
+                "❌ Слишком длинный текст (максимум 3500 символов). Сократите и отправьте снова.",
+                reply_markup=get_cancel_keyboard("ru"),
+            )
+            return
+
+        if state == "update_edit_ru":
+            self.pending_update_changelogs["ru"] = edited
+            self.user_states[user_id] = "update_edit_en"
+            current_en = self.pending_update_changelogs.get("en") or "—"
+            await message.answer(
+                "✅ RU сохранён.\n\n"
+                "✏️ <b>Редактирование changelog (EN)</b>\n\n"
+                "Отправьте полный английский текст одним сообщением.\n"
+                "Текущая версия:",
+                parse_mode="HTML",
+                reply_markup=get_cancel_keyboard("ru"),
+            )
+            await self.send_long_message(user_id, current_en)
+            return
+
+        # update_edit_en
+        self.pending_update_changelogs["en"] = edited
+        await message.answer("✅ EN сохранён. Обновлённый предпросмотр:")
+        await self._send_update_preview(user_id, self.pending_update_changelogs)
+
     async def _process_update_broadcast(self):
         """Выполнение рассылки обновлений после подтверждения админа."""
         if not hasattr(self, 'pending_update_changelogs'):
@@ -1220,6 +1475,8 @@ class TelegramTherapistBot:
 
         changelogs = self.pending_update_changelogs
         del self.pending_update_changelogs
+        if self.user_states.get(self.admin_id, "").startswith("update_"):
+            self.user_states[self.admin_id] = "chat"
 
         # Статистика
         sent_count = 0
@@ -1244,7 +1501,8 @@ class TelegramTherapistBot:
                 # Build localized message with header and footer
                 header = t(user_lang, "update_notification_header")
                 footer = t(user_lang, "update_notification_footer")
-                localized_changelog = f"{header}{changelog}{footer}"
+                # Escape body so admin edits can't break HTML parse_mode
+                localized_changelog = f"{header}{html.escape(str(changelog))}{footer}"
 
                 await self.send_long_message(
                     user_id,
@@ -1281,7 +1539,8 @@ class TelegramTherapistBot:
         await self.send_long_message(
             self.admin_id,
             "\n".join(report_lines),
-            parse_mode="HTML"
+            parse_mode="HTML",
+            reply_markup=get_main_keyboard(self.user_langs.get(self.admin_id, DEFAULT_LANG)),
         )
     async def _handle_reset(self, message: types.Message):
         user_id = message.from_user.id
@@ -1304,6 +1563,42 @@ class TelegramTherapistBot:
 
 
     
+    async def _handle_meta(self, message: types.Message):
+        """Film-frame entry point."""
+        from app.features.filmframe.handlers import start_filmframe
+        await start_filmframe(self, message)
+
+    async def _handle_remarque(self, message: types.Message):
+        """Old /meta behavior: existential metaphor."""
+        user_id = message.from_user.id
+        lang = self.user_langs.get(user_id, DEFAULT_LANG)
+
+        if user_id not in self.sessions or not self.sessions[user_id].history:
+            await message.answer(t(lang, 'story_too_short'))
+            return
+
+        await message.answer(t(lang, 'meta_analyzing'), parse_mode='HTML')
+        therapist = self._get_therapist(user_id)
+        meta_prompt = t(lang, 'meta_prompt')
+        response = therapist.generate_response(meta_prompt, temporary_system_instruction=meta_prompt, use_analysis_model=True)
+        meta_label = 'Метафора' if lang == 'ru' else 'Metaphor'
+        await message.answer(f'✨ <b>{meta_label}:</b>\n\n{html.escape(response)}', parse_mode='HTML')
+
+    async def _handle_ff_describe(self, message: types.Message, text: str):
+        """Filmframe: user describes state -> build scene."""
+        from app.features.filmframe.handlers import handle_ff_describe
+        await handle_ff_describe(self, message, text)
+
+    async def _handle_ff_preview(self, message: types.Message, text: str):
+        """Filmframe: user on preview -> confirm/edit/cancel."""
+        from app.features.filmframe.handlers import handle_ff_preview
+        await handle_ff_preview(self, message, text)
+
+    async def _handle_ff_edit(self, message: types.Message, text: str):
+        """Filmframe: user editing scene."""
+        from app.features.filmframe.handlers import handle_ff_edit
+        await handle_ff_edit(self, message, text)
+
     async def _handle_assoc_start(self, message: types.Message):
         """Начало сбора ассоциаций."""
         user_id = message.from_user.id
@@ -1332,9 +1627,16 @@ class TelegramTherapistBot:
     async def _handle_cancel(self, message: types.Message):
         """Отмена текущего действия."""
         user_id = message.from_user.id
+        state = self.user_states.get(user_id, "chat")
         self.user_states[user_id] = "chat"
         if user_id in self.temp_associations:
             del self.temp_associations[user_id]
+        if user_id in self.filmframe_state:
+            del self.filmframe_state[user_id]
+        # Cancel only drops the update draft when admin is inside that flow
+        if user_id == self.admin_id and state.startswith("update_"):
+            if hasattr(self, "pending_update_changelogs"):
+                del self.pending_update_changelogs
 
         lang = self.user_langs.get(user_id, DEFAULT_LANG)
         await message.answer(
@@ -1350,6 +1652,9 @@ class TelegramTherapistBot:
         t_en_cancel = t('en', 'button_cancel')
         if text and text.strip() in (t_ru_cancel, t_en_cancel, '/cancel', '❌ Отмена', 'Cancel'):
             await self._handle_cancel(message)
+            # This path is reached via the catch-all handler, which enqueues first.
+            if user_id in self.message_queue and self.message_queue[user_id]:
+                self.message_queue[user_id].pop(0)
             return
         
         # Проверяем подтверждение рассылки
@@ -1363,11 +1668,24 @@ class TelegramTherapistBot:
                 await message.answer("❌ Рассылка отменена")
             return
 
-        # Проверяем подтверждение обновлений
-        if user_id == self.admin_id and hasattr(self, 'pending_update_changelogs') and text.strip().lower() in ("да", "yes", "д", "y"):
-            await message.answer("✅ Начинаю рассылку обновлений...")
-            await self._process_update_broadcast()
+        # Подтверждение / правка changelog обновления (admin)
+        if user_id == self.admin_id and state == "update_confirm":
+            await self._handle_update_confirm_input(message, text)
             return
+        if user_id == self.admin_id and state in ("update_edit_ru", "update_edit_en"):
+            await self._handle_update_edit_input(message, state, text)
+            return
+        # Backward-compatible: pending draft without explicit state
+        if (
+            user_id == self.admin_id
+            and hasattr(self, "pending_update_changelogs")
+            and state == "chat"
+        ):
+            choice = text.strip().lower()
+            if choice in _UPDATE_CONFIRM_YES | _UPDATE_CONFIRM_EDIT | _UPDATE_CONFIRM_NO:
+                self.user_states[user_id] = "update_confirm"
+                await self._handle_update_confirm_input(message, text)
+                return
 
         
         # Если язык еще не установлен, пробуем определить его один раз
@@ -1388,6 +1706,17 @@ class TelegramTherapistBot:
             except Exception:
                 pass
         
+        # Filmframe flow
+        if state == "ff_describe":
+            await self._handle_ff_describe(message, text)
+            return
+        if state == "ff_preview":
+            await self._handle_ff_preview(message, text)
+            return
+        if state == "ff_edit":
+            await self._handle_ff_edit(message, text)
+            return
+
         # Если собираем ассоциации
 
         if state.startswith("assoc_"):
@@ -1416,17 +1745,25 @@ class TelegramTherapistBot:
             return
 
         user_id = message.from_user.id
+
+        # Commands are handled by dedicated handlers — never enqueue or stream them.
+        if message.text and message.text.startswith('/'):
+            return
         
-        # Message queue flood protection (max 3 pending messages)
+        # Message queue flood protection (max 3 pending messages).
+        # Drop stale entries so a stuck flow can't lock the user out forever.
         if user_id not in self.message_queue:
             self.message_queue[user_id] = []
-        
-        # If >3 messages already waiting for response, trigger flood warning
+        self.message_queue[user_id] = [
+            ts for ts in self.message_queue[user_id] if now - ts < 180
+        ]
+
+        # If >=3 messages already waiting for response, trigger flood warning
         if len(self.message_queue[user_id]) >= 3:
             lang = self.user_langs.get(user_id, DEFAULT_LANG)
             await message.answer(t(lang, "error_flood"))
             return
-            
+
         # Add current message to queue (using timestamp as ID)
         self.message_queue[user_id].append(now)
         
@@ -1440,12 +1777,6 @@ class TelegramTherapistBot:
         self.user_last_active[user_id] = now_dt        
         # Сохраняем при каждом сообщении для актуальности таймстемпов
         self._save_user_prefs()
-
-        
-        # Если это команда, aiogram сам её обработает через зарегистрированные хендлеры.
-        # Мы проверяем это ДО логики тишины, чтобы команды работали всегда.
-        if message.text and message.text.startswith('/'):
-            return
         # Проверка на активную минуту тишины
         if user_id in self.silence_until:
             remaining = int(self.silence_until[user_id] - now)
@@ -1536,16 +1867,21 @@ class TelegramTherapistBot:
             # Получаем анализ
             therapist = self._get_therapist(user_id)
             
-            # Выполняем в отдельном потоке
-            loop = asyncio.get_event_loop()
+            # Стриминг: отправляем пустое сообщение и редактируем его
+            sent = await message.answer("…")
+            full_analysis = ""
             try:
-                analysis = await loop.run_in_executor(
-                    None,
-                    therapist.analyze_associations,
-                    associations
-                )
+                chunk_source = self._stream_generic(therapist.analyze_associations_stream, associations)
+                full_analysis, shown = await self._smooth_stream_generic(chunk_source)
+                for part in shown:
+                    if len(full_analysis) <= 4000:
+                        try:
+                            await sent.edit_text(part)
+                        except Exception:
+                            pass
+                        await asyncio.sleep(0.12)
             except Exception as e:
-                await message.answer(t(lang, "error_llm"))
+                await sent.edit_text(t(lang, "error_llm"))
                 return
             finally:
                 # Remove from queue
@@ -1555,25 +1891,24 @@ class TelegramTherapistBot:
             self.user_states[user_id] = "chat"
             del self.temp_associations[user_id]
 
-            # Отправляем текстовый ответ (разбиваем на части если длинный)
-            max_length = 4000
-            
-            # Strip markdown before escaping HTML to avoid issues with bold/italic tags
-            clean_analysis = strip_markdown(analysis)
-            
-            # Escape HTML characters to prevent parsing issues in Telegram
+            # Очищаем и форматируем финальный ответ
+            clean_analysis = strip_markdown(full_analysis)
             escaped_analysis = html.escape(clean_analysis)
             
-            full_response = f"<b>{('Интерпретация' if lang=='ru' else 'Interpretation')}:</b>\n\n{escaped_analysis}"            
-            if len(full_response) > max_length:
-                parts = [full_response[i:i+max_length] for i in range(0, len(full_response), max_length)]
+            final_text = f"<b>{('Интерпретация' if lang=='ru' else 'Interpretation')}:</b>\n\n{escaped_analysis}"
+            max_length = 4000
+            if len(final_text) > max_length:
+                # Если длинное — удаляем стрим-сообщение и отправляем частями
+                await sent.delete()
+                parts = [final_text[i:i+max_length] for i in range(0, len(final_text), max_length)]
                 for i, part in enumerate(parts):
                     reply_markup = get_main_keyboard(lang) if i == len(parts) - 1 else None
                     await message.answer(part, parse_mode="HTML", reply_markup=reply_markup)
             else:
-                await message.answer(full_response, parse_mode="HTML", reply_markup=get_main_keyboard(lang))        
-            # Remove from queue if not a final state            if user_id in self.message_queue and self.message_queue[user_id]:
-                self.message_queue[user_id].pop(0)
+                try:
+                    await sent.edit_text(final_text, parse_mode="HTML", reply_markup=get_main_keyboard(lang))
+                except Exception:
+                    await message.answer(final_text, parse_mode="HTML", reply_markup=get_main_keyboard(lang))
     async def _handle_story_input(self, message: types.Message, text: str):        
         """Обработка ввода истории."""
         user_id = message.from_user.id
@@ -1586,47 +1921,56 @@ class TelegramTherapistBot:
         if len(text) > 3000:
             await message.answer(t(lang, "story_too_long"))
             return        
-        await message.answer(t(lang, "analyzing"))        
         therapist = self._get_therapist(user_id)
         
-        # Выполняем в отдельном потоке
-        loop = asyncio.get_event_loop()
+        # Стриминг: отправляем пустое сообщение и редактируем его
+        sent = await message.answer("…")
+        full_analysis = ""
         try:
-            analysis = await loop.run_in_executor(
-                None,
-                therapist.analyze_story,
-                text
-            )
+            chunk_source = self._stream_generic(therapist.analyze_story_stream, text)
+            full_analysis, shown = await self._smooth_stream_generic(chunk_source)
+            for part in shown:
+                if len(full_analysis) <= 4000:
+                    try:
+                        await sent.edit_text(part)
+                    except Exception:
+                        pass
+                    await asyncio.sleep(0.12)
         except Exception as e:
-            await message.answer(t(lang, "error_llm"))
+            await sent.edit_text(t(lang, "error_llm"))
             return
         finally:
             # Remove from queue
             if user_id in self.message_queue and self.message_queue[user_id]:
                 self.message_queue[user_id].pop(0)
         
-        self.user_states[user_id] = "chat"        
+        self.user_states[user_id] = "chat"
         
-        # Отправляем текстовый ответ (разбиваем на части если длинный)
-        max_length = 4000
+        # Очищаем и форматируем финальный ответ
+        clean_analysis = strip_markdown(full_analysis)
         
-        # Strip markdown before escaping HTML to avoid issues with bold/italic tags
-        clean_analysis = strip_markdown(analysis)
-        
-        # Если после очистки текст пустой или содержит только технические фразы, 
-        # возможно, strip_markdown удалил слишком много.
+        # Если после очистки текст пустой или содержит только технические фразы
         if not clean_analysis.strip() or "Ответ должен быть" in clean_analysis:
-            print(f"[DEBUG] strip_markdown returned empty or technical text. Original: {analysis}")
-            clean_analysis = analysis
-        # Escape HTML characters to prevent parsing issues in Telegram
-        escaped_analysis = html.escape(clean_analysis)        
-        full_response = f"<b>{('Экзистенциальный отклик' if lang=='ru' else 'Existential response')}:</b>\n\n{escaped_analysis}"        
-        if len(full_response) > max_length:
-            parts = [full_response[i:i+max_length] for i in range(0, len(full_response), max_length)]
-            for part in parts:
-                await message.answer(part, parse_mode="HTML")
+            print(f"[DEBUG] strip_markdown returned empty or technical text. Original: {full_analysis}")
+            clean_analysis = full_analysis
+        
+        escaped_analysis = html.escape(clean_analysis)
+        final_text = f"<b>{('Экзистенциальный отклик' if lang=='ru' else 'Existential response')}:</b>\n\n{escaped_analysis}"
+        max_length = 4000
+        if len(final_text) > max_length:
+            # Если длинное — удаляем стрим-сообщение и отправляем частями
+            await sent.delete()
+            parts = [final_text[i:i+max_length] for i in range(0, len(final_text), max_length)]
+            for i, part in enumerate(parts):
+                kwargs = {"parse_mode": "HTML"}
+                if i == len(parts) - 1:
+                    kwargs["reply_markup"] = get_main_keyboard(lang)
+                await message.answer(part, **kwargs)
         else:
-            await message.answer(full_response, parse_mode="HTML")        
+            try:
+                await sent.edit_text(final_text, parse_mode="HTML", reply_markup=get_main_keyboard(lang))
+            except Exception:
+                await message.answer(final_text, parse_mode="HTML", reply_markup=get_main_keyboard(lang))        
     async def _handle_meaning(self, message: types.Message):
         user_id = message.from_user.id
         lang = self.user_langs.get(user_id, DEFAULT_LANG)
@@ -1733,13 +2077,166 @@ class TelegramTherapistBot:
                     "Вы можете отключить ежедневные смыслы командой /meaning_gone"
                 )
                 await self.send_long_message(chat_id, hint)
-    async def send_long_message(self, chat_id: int, text: str, parse_mode: str = None):
+    async def send_long_message(self, chat_id: int, text: str, parse_mode: str = None, reply_markup=None):
         """Split long messages into chunks of 4000 characters."""
         if len(text) <= 4000:
-            await self.bot.send_message(chat_id, text, parse_mode=parse_mode)
+            await self.bot.send_message(chat_id, text, parse_mode=parse_mode, reply_markup=reply_markup)
         else:
-            for i in range(0, len(text), 4000):
-                await self.bot.send_message(chat_id, text[i:i+4000], parse_mode=parse_mode)
+            # Attach keyboard only to the last chunk so it stays visible after long previews.
+            chunks = [text[i:i + 4000] for i in range(0, len(text), 4000)]
+            for idx, chunk in enumerate(chunks):
+                kwargs = {"parse_mode": parse_mode}
+                if reply_markup is not None and idx == len(chunks) - 1:
+                    kwargs["reply_markup"] = reply_markup
+                await self.bot.send_message(chat_id, chunk, **kwargs)
+
+    async def _stream_chat(self, therapist, user_input):
+        """Запускает синхронный chat_stream в отдельном потоке и отдаёт чанки в async."""
+        loop = asyncio.get_event_loop()
+        queue = asyncio.Queue()
+
+        def _producer():
+            try:
+                for chunk in therapist.chat_stream(user_input):
+                    loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
+            except Exception as e:
+                loop.call_soon_threadsafe(queue.put_nowait, ("error", str(e)))
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+
+        threading.Thread(target=_producer, daemon=True).start()
+
+        while True:
+            kind, payload = await queue.get()
+            if kind == "chunk":
+                yield payload
+            elif kind == "error":
+                raise RuntimeError(payload)
+            else:
+                break
+
+    async def _stream_generic(self, sync_gen_func, *args):
+        """Запускает синхронный генератор (sync_gen_func) в отдельном потоке
+        и отдаёт чанки в async через очередь.
+        
+        sync_gen_func — функция, возвращающая sync-генератор (yield).
+        """
+        loop = asyncio.get_event_loop()
+        queue = asyncio.Queue()
+
+        def _producer():
+            try:
+                for chunk in sync_gen_func(*args):
+                    loop.call_soon_threadsafe(queue.put_nowait, ("chunk", chunk))
+            except Exception as e:
+                loop.call_soon_threadsafe(queue.put_nowait, ("error", str(e)))
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
+
+        threading.Thread(target=_producer, daemon=True).start()
+
+        while True:
+            kind, payload = await queue.get()
+            if kind == "chunk":
+                yield payload
+            elif kind == "error":
+                yield f"Ошибка: {payload}"
+                break
+            elif kind == "done":
+                break
+
+    async def _smooth_stream(self, therapist, user_input, words_per_tick: int = 3, tick: float = 0.12):
+        """Сглаживает стриминг: накапливает чанки от API и отдаёт
+        последовательные префиксы текста до границ слов — так что
+        edit_text(prefix) сразу показывает всё накопленное.
+
+        Возвращает (полный_текст, список_префиксов).
+        """
+        full = ""
+        shown = []
+
+        async for chunk in self._stream_chat(therapist, user_input):
+            full += chunk
+            # Сколько префиксов нужно для words_per_tick слов в каждом
+            words = re.findall(r'\S+', full)
+            target = max(1, len(words) // words_per_tick)
+            while len(shown) < target:
+                n = (len(shown) + 1) * words_per_tick
+                if n >= len(words):
+                    shown.append(full)
+                    break
+                # Обрезаем строго по концу n-го слова
+                match = list(re.finditer(r'\S+', full))[n - 1]
+                shown.append(full[:match.end()])
+
+        if not shown or shown[-1] != full:
+            shown.append(full)
+        return full, shown
+
+    async def _smooth_stream_generic(self, chunk_source, words_per_tick: int = 3, tick: float = 0.12):
+        """Универсальная версия _smooth_stream: принимает async-генератор чанков
+        (не привязана к _stream_chat).
+
+        Возвращает (полный_текст, список_префиксов).
+        """
+        full = ""
+        shown = []
+
+        async for chunk in chunk_source:
+            full += chunk
+            words = re.findall(r'\S+', full)
+            target = max(1, len(words) // words_per_tick)
+            while len(shown) < target:
+                n = (len(shown) + 1) * words_per_tick
+                if n >= len(words):
+                    shown.append(full)
+                    break
+                match = list(re.finditer(r'\S+', full))[n - 1]
+                shown.append(full[:match.end()])
+
+        if not shown or shown[-1] != full:
+            shown.append(full)
+        return full, shown
+
+    def _split_text(self, text: str, max_len: int = 4000) -> list:
+        """Разбивает текст на части <= max_len, не обрезая на полуслове.
+
+        Разбиение идёт по границам предложений (точка, восклицательный,
+        вопросительный знак, многоточие, перенос строки). Если одно предложение
+        длиннее max_len, оно режется по пробелам (по границам слов).
+        """
+        if len(text) <= max_len:
+            return [text]
+
+        sentences = re.split(r'(?<=[.!?…])\s+|\n+', text)
+        chunks = []
+        current = ""
+        for sent in sentences:
+            sent = sent.strip()
+            if not sent:
+                continue
+            if len(current) + len(sent) + 1 <= max_len:
+                current = (current + " " + sent).strip() if current else sent
+            else:
+                if current:
+                    chunks.append(current)
+                # Одно предложение длиннее лимита — режем по словам
+                if len(sent) > max_len:
+                    words = sent.split(" ")
+                    buf = ""
+                    for w in words:
+                        if len(buf) + len(w) + 1 > max_len:
+                            if buf:
+                                chunks.append(buf)
+                            buf = w
+                        else:
+                            buf = (buf + " " + w).strip() if buf else w
+                    current = buf
+                else:
+                    current = sent
+        if current:
+            chunks.append(current)
+        return chunks
 
     async def _generate_user_summary(self, user_id: int, therapist: ExistentialTherapistBot) -> str:
 
@@ -1764,135 +2261,111 @@ class TelegramTherapistBot:
         prev_summary = self.user_summaries.get(user_id, "")
         prev_context = f"\n\nПредыдущее резюме (контекст):\n{prev_summary}" if prev_summary else ""
         
-        prompt = f"""Ты — опытный супервизор экзистенциальной терапии. Проанализируй диалог и дай глубокое, конкретное резюме.
+        prompt = f"""Ты — супервизор экзистенциальной терапии. Дай лаконичное, конкретное резюме сессии.
 
-Диалог (последние 16 сообщений):
+Диалог (последние сообщения):
 {conv_text}
 {prev_context}
 
-ЗАПРЕЩЕНО использовать эти шаблонные фразы:
-- "Не выявлен" / "не определена" / "не установлено"
-- "Начало диалога" как оправдание отсутствия анализа
-- "Неформальное, возможно игривое или дистанцированное"
-- "Установление контакта через..."
-- "Первичное взаимодействие"
-- "Недостаточно материала" — если есть хоть 2 сообщения, анализируй их
-- Любые формулы в скобках вида "(...)" для описания состояний
+Правила:
+- Пиши плотно: 2-3 коротких предложения, без воды и шаблонов.
+- Только факты из диалога: тема, эмоция, динамика.
+- Запрещены пустые формулы: "не выявлено", "начало диалога", "недостаточно материала", скобки-оправдания.
+- Если сообщений мало — одно конкретное наблюдение, без оправданий.
 
-Вместо этого:
-- Если мало сообщений — скажи конкретно, что заметил в этих сообщениях
-- Опиши реальные эмоции: тоска, тревога, злость, радость, страх, одиночество
-- Назови конкретные темы: смерть, свобода, смысл, отношения, вина, стыд
-- Укажи динамику: клиент открылся или закрылся, появился инсайт или нет
+Формат ответа (строго):
+1) Что беспокоит сейчас
+2) Эмоциональный тон
+3) Что сдвинулось / застряло
 
-Формат (кратко, 2-4 предложения):
-- Что беспокоит клиента прямо сейчас
-- Какое эмоциональное состояние
-- Что изменилось в диалоге
-
-Если диалог только начался — напиши: "Диалог начался. [конкретное наблюдение из первых сообщений]"."""
+Без заголовков, списков и markdown. Только связный текст."""
         
         try:
             # Используем gpt-5.4-mini для резюме
             summary = therapist.generate_response(
                 prompt,
-                temporary_system_instruction="Ты — супервизор. Пиши конкретно, без шаблонов. Одно дело — одно предложение.",
-                model="gpt-5.4-mini"
+                temporary_system_instruction=(
+                    "Ты — супервизор. Пиши предельно лаконично и конкретно. "
+                    "Максимум 3 коротких предложения. Без шаблонов и markdown."
+                ),
+                model=os.getenv("SUMMARY_MODEL", "gpt-5.4-mini")
             )
-            return summary[:500]  # ограничиваем длину
+            # Soft cap only as a safety net; laconic prompt should keep it short.
+            return (summary or "").strip()[:2000]
         except Exception as e:
             return f"Ошибка генерации: {e}"
 
 
-    async def _check_for_crisis(self, user_id: int, text: str, username: Optional[str] = None):
-        """Check for suicide/crisis trigger words and alert admin."""
-        # Trigger words in Russian and English
-        trigger_words = [
-            # Russian - прямые суицидальные угрозы
-            "суицид", "самоубийство", "убью себя", "хочу умереть", "покончить с собой",
-            "не хочу жить", "кончить с собой", "повеситься", "перерезать вены", "выпрыгнуть",
-            "прыгнуть с окна", "прыгнуть с крыши", "прыгнуть с моста", "броситься под поезд",
-            "передозировка", "смерть мне", "лучше бы я умер", "лучше бы я умерла",
-            "закончить с собой", "уйти из жизни", "покинуть этот мир", "не вижу смысла жить",
-            "устал жить", "устала жить", "не могу больше", "хочу исчезнуть",
-            "лучше бы меня не было", "мир без меня лучше", "без меня всем будет лучше",
-            "отравиться", "заколоться", "вскрыть вены", "выйти из игры навсегда",
-            "вечный сон", "последний выход", "не хочу просыпаться", "зачем я живу",
-            "прощайте все", "прощай навсегда", "это моё последнее сообщение",
-            "только бы не жить", "хочу чтобы меня не стало", "меня скоро не будет",
-            "я скоро уйду", "ухожу навсегда", "больше не вернусь",
-            # Russian - самоповреждение (без суицидального умысла)
-            "режу себя", "порезать себя", "бью себя", "причиняю себе боль",
-            "наказываю себя", "жгу себя", "царапаю себя до крови",
-            "хочу причинить себе боль", "снова порезался", "снова порезалась",
-            # Russian - острый кризис и беспомощность
-            "не вижу выхода", "выхода нет", "всё рухнуло", "жить незачем",
-            "незачем жить", "нет сил жить", "сил больше нет", "я сломан", "я сломана",
-            "я разрушен", "я разрушена", "меня больше нет", "я уже мёртв", "я уже мёртва",
-            "внутри пусто", "внутри темнота", "темнота внутри", "провал в никуда",
-            "хочу всё прекратить", "хочу остановить всё", "остановите это",
-            # Russian - прощания и финальные жесты
-            "раздаю вещи", "написал завещание", "написала завещание", "попрощался со всеми",
-            "попрощалась со всеми", "никто не заметит", "никому я не нужен", "никому не нужна",
-            "всем будет лучше без меня", "я обуза", "я только мешаю",
-            # Russian - насилие в отношении себя / острая боль
-            "хочу исчезнуть навсегда", "хочу раствориться", "хочу провалиться",
-            "невыносимая боль", "боль невыносима", "не могу терпеть эту боль",
-            "больно жить", "жить больно", "жизнь — это боль",
-            # English - direct suicidal threats
-            "suicide", "kill myself", "want to die", "end my life", "don't want to live",
-            "better off dead", "hang myself", "cut my wrists", "jump off a bridge",
-            "jump in front of a train", "overdose", "no reason to live", "kill me",
-            "end it all", "slit wrists", "swallow pills", "final exit",
-            "i won't be here anymore", "this is my last message", "saying goodbye forever",
-            "i'm going to do it", "i've decided to end it",
-            # English - self-harm (without explicit suicidal intent)
-            "cutting myself", "i cut myself", "hurt myself", "self harm", "self-harm",
-            "burning myself", "hitting myself", "punishing myself", "i cut again",
-            "started cutting", "back to cutting",
-            # English - acute crisis and hopelessness
-            "no way out", "can't go on", "can't take it anymore", "nothing matters",
-            "want to disappear", "better without me", "tired of living",
-            "trapped with no escape", "i'm broken", "i'm destroyed", "i'm already dead",
-            "empty inside", "darkness inside", "want it all to stop", "make it stop",
-            "i give up on life", "done with life", "done with everything",
-            # English - farewell gestures
-            "giving away my things", "wrote my will", "said goodbye to everyone",
-            "nobody will notice", "nobody needs me", "everyone is better without me",
-            "i'm a burden", "i'm just in the way", "world is better without me",
-            # English - unbearable pain
-            "want to vanish forever", "pain is unbearable", "unbearable pain",
-            "can't bear this pain", "living is painful", "life is pain",
-            "too much pain", "end the pain", "just want the pain to stop",
+    async def _handle_void(self, message: types.Message):
+        """Static /void effect — no LLM, no streaming, no message queue."""
+        user_id = message.from_user.id
+        lang = self.user_langs.get(user_id, DEFAULT_LANG)
+
+        # Tall blank spacer, then the quote after a pause.
+        # Telegram treats pure whitespace / some "blank" glyphs as empty and
+        # rejects them — never fall back to a visible "...".
+        await self._send_void_spacer(message)
+        await asyncio.sleep(3)
+        await message.answer(t(lang, "void_msg"), parse_mode="HTML")
+
+    async def _send_void_spacer(self, message: types.Message) -> None:
+        """Send a large empty-looking message that Telegram will accept."""
+        # Candidates ordered by how "blank" they tend to look in clients.
+        # Each line needs a non-trimmable char or Telegram collapses / rejects it.
+        # Aim for a wide + tall bubble (near mobile bubble width).
+        rows = 12
+        candidates = [
+            # Fullwidth ideographic spaces — each char is ~1em wide.
+            "\n".join(["\u3000" * 40] * rows),
+            # NBSP block (narrower glyphs → more chars)
+            "\n".join(["\u00A0" * 80] * rows),
+            # Braille blank
+            "\n".join(["\u2800" * 48] * rows),
+            # HTML nbsp (explicit entities)
+            ("\n".join(["&nbsp;" * 80] * rows), "HTML"),
+            # Last resort: monospaced spaces (slightly visible box on some clients,
+            # but still a real spacer — never "...").
+            ("<pre>" + "\n".join([" " * 80] * rows) + "</pre>", "HTML"),
         ]
-        
-        text_lower = text.lower()
-        for trigger in trigger_words:
-            if trigger in text_lower:
-                # Alert admin
-                alert_msg = (
-                    f"🚨 <b>ВНИМАНИЕ: ТРЕВОЖНЫЕ СЛОВА ОТ ПОЛЬЗОВАТЕЛЯ</b>\n\n"
-                    f"<b>User ID:</b> {user_id}\n"
-                    f"<b>Username:</b> @{username or 'не указан'}\n"
-                    f"<b>Триггер:</b> {trigger}\n\n"
-                    f"<b>Сообщение:</b>\n{text[:200]}{'...' if len(text) > 200 else ''}\n\n"
-                    f"⚠️ Требуется внимание! Возможен кризисный случай."
-                )
-                try:
-                    await self.send_long_message(self.admin_id, alert_msg, parse_mode="HTML")
-                    print(f"[CRISIS ALERT] Trigger word '{trigger}' from user {user_id}")
-                except Exception as e:
-                    print(f"[CRISIS ALERT ERROR] Failed to send alert: {e}")
-                break  # Send only one alert per message
+
+        last_err = None
+        for item in candidates:
+            try:
+                if isinstance(item, tuple):
+                    text, parse_mode = item
+                    await message.answer(text, parse_mode=parse_mode)
+                else:
+                    await message.answer(item)
+                return
+            except Exception as e:
+                last_err = e
+                continue
+
+        print(f"[VOID] All spacers failed: {type(last_err).__name__}: {last_err}")
+        # Absolute fallback: still avoid "..."; one NBSP keeps API happy.
+        try:
+            await message.answer("\u00A0")
+        except Exception as e:
+            print(f"[VOID] Final fallback failed: {type(e).__name__}: {e}")
 
     async def _handle_chat(self, message: types.Message, text: str, is_voice: bool = False):
         """Обработка обычного чата."""
         user_id = message.from_user.id
         user_input = text
         lang = self.user_langs.get(user_id, DEFAULT_LANG)
-        
-        # Check for crisis trigger words
-        await self._check_for_crisis(user_id, text, message.from_user.username)
+
+        # Never stream (or LLM-answer) slash-commands that slipped into chat.
+        raw = (text or "").strip()
+        if raw.startswith("/"):
+            cmd = raw[1:].split("@", 1)[0].split()[0].lower()
+            if cmd == "void":
+                if user_id in self.message_queue and self.message_queue[user_id]:
+                    self.message_queue[user_id].pop(0)
+                await self._handle_void(message)
+                return
+            if user_id in self.message_queue and self.message_queue[user_id]:
+                self.message_queue[user_id].pop(0)
+            return
         
         # Track username for admin lookup and persist immediately
         if message.from_user.username:
@@ -1909,25 +2382,43 @@ class TelegramTherapistBot:
         
         # Получаем ответ
         therapist = self._get_therapist(user_id)
-        try:
-            # Выполняем в отдельном потоке, чтобы не блокировать event loop
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                therapist.chat,
-                user_input
-            )
-            if not response or response.startswith("Ошибка:"):
-                # Remove from queue on error
-                if user_id in self.message_queue and self.message_queue[user_id]:
-                    self.message_queue[user_id].pop(0)
-                await message.answer(t(lang, "error_llm"))
-                return
-        except Exception:
-            # Remove from queue on error too
+
+        sent = None
+        if is_voice:
+            # Для голосовых сообщений нужен полный текст для генерации речи
+            try:
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(None, therapist.chat, user_input)
+            except Exception:
+                response = "Ошибка: исключение при вызове LLM"
+        else:
+            # Стриминг: отправляем пустое сообщение и редактируем его по мере поступления
+            sent = await message.answer("…")
+            full_response = ""
+            try:
+                full_response, shown = await self._smooth_stream(therapist, user_input)
+                # Каждый элемент shown — префикс полного текста до границы слов.
+                # edit_text заменяет весь текст, поэтому просто присваиваем part.
+                for part in shown:
+                    if len(full_response) <= 4000:
+                        try:
+                            await sent.edit_text(part)
+                        except Exception:
+                            pass
+                        await asyncio.sleep(0.12)
+            except Exception:
+                pass
+            response = full_response
+        if not response or response.startswith("Ошибка:"):
             if user_id in self.message_queue and self.message_queue[user_id]:
                 self.message_queue[user_id].pop(0)
-            await message.answer(t(lang, "error_llm"))
+            if sent is not None:
+                try:
+                    await sent.edit_text(t(lang, "error_llm"))
+                except Exception:
+                    await message.answer(t(lang, "error_llm"))
+            else:
+                await message.answer(t(lang, "error_llm"))
             return
 
         # Update message count and generate summary every 16 messages (internal only)
@@ -1939,7 +2430,7 @@ class TelegramTherapistBot:
         from datetime import datetime
         self.user_recent_messages[user_id].append({
             "role": "user",
-            "content": user_input[:500],  # limit to 500 chars
+            "content": user_input[:4000],  # keep enough context for admin review
             "timestamp": datetime.now().isoformat()
         })
         # Keep only last 16 messages
@@ -1998,12 +2489,33 @@ class TelegramTherapistBot:
         # Отправляем текстовый ответ (разбиваем на части если длинный)
         max_length = 4000
         try:
-            if len(response) > max_length:
-                parts = [response[i:i+max_length] for i in range(0, len(response), max_length)]
-                for part in parts:
-                    await message.answer(part)
+            if is_voice:
+                # Голосовой путь: отправляем текст как раньше
+                parts = self._split_text(response, max_length)
+                for i, part in enumerate(parts):
+                    kwargs = {}
+                    if i == len(parts) - 1:
+                        kwargs["reply_markup"] = get_main_keyboard(lang)
+                    await message.answer(part, **kwargs)
+            elif len(response) > max_length:
+                # Стриминг: сообщение уже отредактировано, но ответ длиннее лимита.
+                # Удаляем стриминговое сообщение и отправляем частями по границам предложений.
+                try:
+                    await sent.delete()
+                except Exception:
+                    pass
+                parts = self._split_text(response, max_length)
+                for i, part in enumerate(parts):
+                    kwargs = {}
+                    if i == len(parts) - 1:
+                        kwargs["reply_markup"] = get_main_keyboard(lang)
+                    await message.answer(part, **kwargs)
             else:
-                await message.answer(response)
+                # Ответ уже показан через edit_text — обновим последнее сообщение с клавиатурой
+                try:
+                    await sent.edit_text(response, reply_markup=get_main_keyboard(lang))
+                except Exception:
+                    pass
         finally:
             # Remove message from queue after responding (or failing)
             if user_id in self.message_queue and self.message_queue[user_id]:
@@ -2015,7 +2527,7 @@ class TelegramTherapistBot:
         from datetime import datetime
         self.user_recent_messages[user_id].append({
             "role": "assistant",
-            "content": response[:500],  # limit to 500 chars
+            "content": response[:4000],  # keep enough context for admin review
             "timestamp": datetime.now().isoformat()
         })
         # Keep only last 16 messages
@@ -2116,32 +2628,40 @@ class TelegramTherapistBot:
         # Кодируем в base64
         base64_image = base64.b64encode(downloaded_file.read()).decode('utf-8')
         image_url = f"data:image/jpeg;base64,{base64_image}"
-        
-        await message.answer(t(lang, "analyzing_image"))
 
         therapist = self._get_therapist(user_id)
 
-        # Выполняем в отдельном потоке
-        loop = asyncio.get_event_loop()
+        # Стриминг: отправляем пустое сообщение и редактируем его
+        sent = await message.answer("…")
+        full_response = ""
         try:
-            response = await loop.run_in_executor(
-                None,
-                therapist.analyze_image,
-                image_url,
-                caption,
-            )
+            chunk_source = self._stream_generic(therapist.analyze_image_stream, image_url, caption)
+            full_response, shown = await self._smooth_stream_generic(chunk_source)
+            for part in shown:
+                if len(full_response) <= 4000:
+                    try:
+                        await sent.edit_text(part)
+                    except Exception:
+                        pass
+                    await asyncio.sleep(0.12)
         except Exception as e:
-            await message.answer(t(lang, "image_analysis_failed", error=str(e)))
+            await sent.edit_text(t(lang, "image_analysis_failed", error=str(e)))
             return
 
-        # If analyze_image returned an error-like string (Russian "Ошибка" or English "Error"), show localized message
-        if not response or (isinstance(response, str) and ("Ошибка" in response or response.strip().lower().startswith("error"))):
-            err_text = response if response else "unknown"
-            await message.answer(t(lang, "image_analysis_failed", error=err_text))
+        # If analyze_image returned an error-like string
+        if not full_response or ("Ошибка" in full_response or full_response.strip().lower().startswith("error")):
+            await sent.edit_text(t(lang, "image_analysis_failed", error=full_response or "unknown"))
             return
 
-        response = strip_markdown(response)
-        await message.answer(response)
+        full_response = strip_markdown(full_response)
+        if len(full_response) <= 4000:
+            try:
+                await sent.edit_text(full_response)
+            except Exception:
+                await message.answer(full_response)
+        else:
+            await sent.delete()
+            await message.answer(full_response)
     async def _check_and_notify_updates(self):
         """Check for code updates and notify all active users."""
         try:
@@ -2161,44 +2681,20 @@ class TelegramTherapistBot:
             print(f"[UPDATE CHECK] Generating changelogs...")
             changelog_ru = check_and_generate_changelog(project_root, therapist, self.admin_id, "ru", should_save_hashes=False)
             changelog_en = check_and_generate_changelog(project_root, therapist, self.admin_id, "en", should_save_hashes=False)
-            
-            # Save hashes once after both changelogs are generated
-            if changelog_ru or changelog_en:
-                save_current_hashes(project_root)
-            
+
+            # Always refresh hash+snapshot baseline after a check.
+            # Otherwise technical-only diffs re-fire on every restart.
+            save_current_hashes(project_root)
+
             print(f"[UPDATE CHECK] Changelog RU: {'YES (' + str(len(changelog_ru)) + ' chars)' if changelog_ru else 'NO'}")
-            print(f"[UPDATE CHECK] Changelog EN: {'YES (' + str(len(changelog_en)) + ' chars)' if changelog_en else 'NO'}")            
+            print(f"[UPDATE CHECK] Changelog EN: {'YES (' + str(len(changelog_en)) + ' chars)' if changelog_en else 'NO'}")
             # Check if there's any changelog (None or empty string)
             has_changelog = bool(changelog_ru or changelog_en)
             if has_changelog:
-                # Store changelogs for admin confirmation
-                self.pending_update_changelogs = {
-                    "ru": changelog_ru,
-                    "en": changelog_en
-                }
-                
-                # Send preview to admin for confirmation
-                preview_limit = 1200  # Increased to show more detailed changelog content
-
-                preview_lines = [
-                    f"📋 <b>Предпросмотр обновления</b>",
-                    "",
-                    f"Получателей: <b>{len(self.user_langs)}</b>",
-                    "",
-                    "<b>RU:</b>",
-                    (changelog_ru[:preview_limit] + "...") if changelog_ru and len(changelog_ru) > preview_limit else (changelog_ru or "—"),
-                    "",
-                    "<b>EN:</b>",
-                    (changelog_en[:preview_limit] + "...") if changelog_en and len(changelog_en) > preview_limit else (changelog_en or "—"),
-                    "",
-                    "Отправить? Ответьте <b>да</b> для подтверждения рассылки."
-                ]
-                
-                await self.send_long_message(
+                await self._send_update_preview(
                     self.admin_id,
-                    "\n".join(preview_lines),
-                    parse_mode="HTML"
-                )                
+                    {"ru": changelog_ru or "", "en": changelog_en or ""},
+                )
                 print(f"[UPDATE CHECK] Admin confirmation requested for {len(self.user_langs)} users")
             else:
                 print(f"[UPDATE CHECK] No changelogs to send, skipping notification")
@@ -2276,3 +2772,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+

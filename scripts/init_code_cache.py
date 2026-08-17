@@ -18,12 +18,14 @@ from pathlib import Path
 script_dir = Path(__file__).parent.resolve()
 project_root = script_dir.parent.resolve()
 
-# Files to track (same as in code_reviewer.py)
+# Files to track (keep in sync with src/code_reviewer.py)
 TRACKED_FILES = [
     "src/telegram_bot.py",
-    "src/therapist_bot.py", 
+    "src/therapist_bot.py",
     "src/i18n.py",
+    "src/rag.py",
     "src/lang_utils.py",
+    "src/code_reviewer.py",
 ]
 
 

@@ -1,225 +1,166 @@
-# Экзистенциальный терапевт-бот
+# Рой (Roi) — экзистенциальный терапевт в Telegram
 
-Чат-бот для экзистенциальной терапии в традиции Ирвина Ялома и Виктора Франкла.
+Чат-бот для экзистенциальной терапии в традиции **Ирвина Ялома** и **Виктора Франкла**.
+Помогает исследовать темы смысла, свободы, одиночества и конечности жизни.
+
+> Это не замена живому специалисту. Если вам тяжело или вы в кризисе — обратитесь за профессиональной помощью.
 
 ## Возможности
 
-- 🧠 **Экзистенциальный подход** — работа с четырьмя данностями (смерть, свобода, одиночество, бессмысленность)
-- 📚 **RAG** — интеграция с корпусом знаний и датасетом ассоциаций
-- 🔍 **Анализ ассоциаций** — сопоставление с паттернами из датасета
-- 🌐 **Многоязычность** — русский и английский
-- 📱 **Telegram бот** — удобный интерфейс в мессенджере
-
----
+- Диалог в духе экзистенциальной терапии (текст, голос, фото)
+- RAG по книгам и датасету ассоциаций (Qdrant + sentence-transformers)
+- Анализ ассоциаций (`/assoc`) и разбор ситуации (`/analyze`)
+- Русский и английский интерфейс
+- Экспериментальный «снимок на плёнку» (`/shoot`)
+- Админ-команды, отзывы и уведомления об обновлениях кода
 
 ## Быстрый старт
 
 ### 1. Установка
 
 ```bash
-cd existential-therapist-bot
+git clone https://github.com/WhatAMistake/roi.git
+cd roi
 
-# Создайте виртуальное окружение
 python -m venv venv
-venv\Scripts\activate  # Windows
 
-# Установите зависимости
-# Используйте файл с зависимостями в папке `docs` (включает langdetect)
-pip install -r docs/requirements.txt
+# Windows
+venv\Scripts\activate
+
+# Linux / macOS
+source venv/bin/activate
+
+pip install -r requirements.txt
 ```
 
-### 2. Настройка API
+### 2. Конфигурация
 
 ```bash
-# Скопируйте пример конфигурации
+# Windows
 copy .env.example .env
+
+# Linux / macOS
+cp .env.example .env
 ```
 
-Отредактируйте `.env`:
+Минимально заполните в `.env`:
 
 ```env
-# Telegram Bot Token (получить у @BotFather)
 TELEGRAM_BOT_TOKEN=123456789:ABCdef...
-
-# Together API (Llama 3.1 70B)
-OPENAI_API_KEY=xxxxxxxxxxxxxxxx
-OPENAI_API_BASE=https://api.together.xyz/v1
+OPENAI_API_KEY=your-api-key
+OPENAI_API_BASE=https://api.openai.com/v1
+ADMIN_ID=your-telegram-id
 ```
 
-**Как получить ключи:**
-- Telegram: откройте [@BotFather](https://t.me/BotFather) → `/newbot`
-- Together AI: https://api.together.xyz → Settings → API Keys
+Бот работает с любым OpenAI-совместимым API (OpenAI, Together, Groq, CometAPI и др.).
+Для провайдеров из РФ см. `docs/RUSSIAN_API.md`.
 
-### 3. Подготовка данных
+### 3. Данные (опционально, для RAG)
 
 ```bash
-# Конвертация датасета ассоциаций
+# xlsx-датасет ассоциаций -> JSON
 python src/convert_dataset.py
 
-# Индексация книг (если есть PDF в папке books/)
+# PDF/TXT/DOCX из books/ -> чанки для RAG
 python src/index_books.py
+```
+
+Или одной командой:
+
+```bash
+python setup.py
 ```
 
 ### 4. Запуск
 
 ```bash
+# Telegram-бот
 python run_telegram.py
+
+# CLI-версия
+python run.py
 ```
 
----
-
-## Конвейер обработки данных
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  [ШАГ 1] ДАННЫЕ                                                 │
-│  ├── xlsx (ваш датасет) ──► convert_dataset.py ──► dataset.json │
-│  └── PDF книги ────────► index_books.py ──────► book_chunks.json│
-│                                                                 │
-│  [ШАГ 2] RAG                                                    │
-│  ├── dataset.json ──┐                                           │
-│  └── book_chunks.json├──► rag.py ──► ChromaDB (векторная БД)    │
-│                                                                 │
-│  [ШАГ 3] LLM                                                    │
-│  └── Together API (Llama 70B) ◄── therapist_bot.py              │
-│                                                                 │
-│  [ШАГ 4] ИНТЕРФЕЙС                                              │
-│  └── Telegram бот ◄── telegram_bot.py                           │
-└─────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Где используется датасет ассоциаций
-
-| Файл | Назначение |
-|------|------------|
-| `dataset.json` | Полные записи респондентов |
-| `association_index.json` | Быстрый поиск: слово → [id записей] |
-| `rag_chunks.json` | Семантический поиск по нарративам |
-
-**Пример работы:**
-
-```
-Пользователь: "Я чувствую пустоту"
-        ↓
-RAG ищет "пустота" в association_index
-        ↓
-Находит 15 записей с этой ассоциацией
-        ↓
-Подтягивает истории этих людей
-        ↓
-Бот отвечает с учётом контекста
-```
-
----
-
-## Провайдеры API
-
-| Провайдер | URL | Модель | Цена/1M tokens |
-|-----------|-----|--------|----------------|
-| **Together AI** | https://api.together.xyz/v1 | Llama 3.1 70B | **$0.88** |
-| Groq | https://api.groq.com/openai/v1 | Llama 3.1 70B | Бесплатно* |
-| OpenAI | https://api.openai.com/v1 | GPT-4o | $5.00 |
-| OpenAI | https://api.openai.com/v1 | GPT-4o-mini | $0.15 |
-
-*Groq — бесплатно, но с ограничениями по速率
-
-**Рекомендация:** Together AI с Llama 3.1 70B — оптимальное соотношение цена/качество.
-
----
-
-## Добавление книг
-
-Положите PDF/TXT/DOCX файлы в папку `books/`:
-
-```
-books/
-├── Ялом - Экзистенциальная психотерапия.pdf
-├── Ялом - Лжец на кушетке.pdf
-├── Франкл - Сказать жизни Да.pdf
-```
-
-Имена файлов: `Автор - Название.pdf`
-
-Затем:
-
-```bash
-python src/index_books.py
-```
-
-**Рекомендуемые книги (3-4 для MVP):**
-
-| Автор | Книга |
-|-------|-------|
-| Ирвин Ялом | "Экзистенциальная психотерапия" |
-| Ирвин Ялом | "Лжец на кушетке" |
-| Виктор Франкл | "Сказать жизни Да!" |
-| Ролло Мэй | "Экзистенциальная психология" |
-
----
-
-## Команды Telegram бота
+## Команды бота
 
 | Команда | Описание |
 |---------|----------|
 | `/start` | Начать диалог |
 | `/help` | Справка |
 | `/reset` | Сбросить историю |
-| `/assoc` | Анализ ассоциаций (5×4 слова) |
+| `/assoc` | Анализ ассоциаций (4 данности) |
+| `/analyze` | Глубокий разбор ситуации |
+| `/shoot` | Снимок внутреннего состояния на «плёнку» |
+| `/switchlang` | Переключить язык (ru/en) |
+| `/lang ru` / `/lang en` | Выбрать язык явно |
+| `/feedback ...` | Отзыв разработчику |
+| `/void` | Взгляд в пустоту |
+| `/silence` | Минута молчания |
+| `/meaning` | Смысл момента |
+| `/remarque` | Замечание по недавнему диалогу |
 
-Дополнительные команды:
+Также можно просто писать текстом, присылать фото или голосовые.
 
-| Команда | Описание |
-|---------|----------|
-| `/lang <en|ru>` | Принудительно установить язык интерфейса и system prompt |
-| `/askprob <0.0-1.0|reset>` | Установить вероятность того, что бот задаст уточняющий вопрос (локально для вас). `reset` — вернуть глобальное значение |
+## Film-frame (`/shoot`)
 
-Как отправить изображение: пришлите фото — бот обработает его и даст экзистенциальный отклик.
+Экспериментальная фича: бот собирает сцену по вашему состоянию и генерирует изображение.
 
----
+В `.env`:
+
+```env
+FILM_FRAME_ENABLED=true
+FILM_FRAME_ALLOWED_USER_IDS=123456789
+FILM_FRAME_MODEL=seedream-5-0-pro-260628
+FILM_FRAME_PER_USER_DAILY_LIMIT=3
+FILM_FRAME_GLOBAL_DAILY_LIMIT=50
+```
+
+Подробности — в `.env.example`.
 
 ## Структура проекта
 
-```
-existential-therapist-bot/
-├── books/                   # PDF книги
-├── data/                    # Индексы (создаются автоматически)
-│   ├── dataset.json
-│   ├── association_index.json
-│   ├── rag_chunks.json
-│   ├── book_chunks.json
-│   └── chromadb/
-├── docs/
-│   └── TOGETHER_API.md      # Инструкция по Together API
-├── prompts/
-│   └── system_prompt.md     # Промпт терапевта
-├── src/
-│   ├── convert_dataset.py   # xlsx → JSON
-│   ├── index_books.py       # PDF → RAG
-│   ├── rag.py               # RAG pipeline
-│   ├── therapist_bot.py     # Логика бота
-│   └── telegram_bot.py      # Telegram интерфейс
-├── .env                     # Конфигурация (не коммитить!)
+```text
+roi/
+├── app/features/filmframe/   # фича /shoot
+├── books/                    # книги для индексации (PDF не коммитятся)
+├── certs/                    # локальные сертификаты (не коммитятся)
+├── data/                     # runtime-данные и индексы (не коммитятся)
+├── docs/                     # заметки по API
+├── prompts/                  # system prompt (ru/en)
+├── scripts/                  # служебные скрипты (code cache и др.)
+├── src/                      # ядро бота и RAG
+│   ├── telegram_bot.py
+│   ├── therapist_bot.py
+│   ├── rag.py
+│   ├── i18n.py
+│   ├── lang_utils.py
+│   ├── code_reviewer.py
+│   ├── convert_dataset.py
+│   └── index_books.py
+├── tests/                    # тесты
 ├── .env.example
 ├── requirements.txt
-├── setup.py                 # Автоматическая настройка
-├── run.py                   # CLI версия
-└── run_telegram.py          # Telegram версия
+├── run_telegram.py           # точка входа Telegram
+├── run.py                    # точка входа CLI
+└── setup.py                  # подготовка данных
 ```
 
----
+## Тесты
 
-## Оценка стоимости
+```bash
+python -m pytest tests/
+```
 
-| Пользователей/день | Токенов/день | Стоимость/месяц |
-|--------------------|--------------|-----------------|
-| 10 | ~50,000 | ~$1.50 |
-| 50 | ~250,000 | ~$7.50 |
-| 100 | ~500,000 | ~$15.00 |
+## Важно перед пушем
 
----
+Не коммитьте секреты и runtime-данные:
+
+- `.env`
+- `data/*` (кроме `data/.gitkeep`)
+- `user_prefs.json`
+- PDF в `books/`
+- локальные сертификаты в `certs/`
 
 ## Лицензия
 
-MIT| Продакшн | Llama 3.1 70B | Качество понимания |
+MIT

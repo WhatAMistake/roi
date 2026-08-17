@@ -1,4 +1,4 @@
-﻿""""
+""""
 Экзистенциальный терапевт-бот.
 Интеграция LLM + RAG + System Prompt.
 """
@@ -31,8 +31,8 @@ class ExistentialTherapistBot:
     
     def __init__(
         self,
-        model: str = "deepseek-v4-pro",  # основная модель для чата
-        analysis_model: str = "deepseek-v4-pro",  # модель для анализов
+        model: str = os.getenv("OPENAI_MODEL", "deepseek-v4-pro"),  # основная модель для чата
+        analysis_model: str = os.getenv("OPENAI_ANALYSIS_MODEL", "deepseek-v4-pro"),  # модель для анализов
         api_key: Optional[str] = None,
 
         api_base: Optional[str] = None,
@@ -466,7 +466,8 @@ class ExistentialTherapistBot:
                     full_response += content
                     yield content
             
-            # Сохраняем в историю            self.history.append(Message(role="user", content=user_input))
+            # Сохраняем в историю
+            self.history.append(Message(role="user", content=user_input))
             self.history.append(Message(role="assistant", content=full_response))
             
         except Exception as e:
@@ -476,8 +477,16 @@ class ExistentialTherapistBot:
 
     def analyze_image(self, image_url: str, user_input: str = "Что изображено на этой картинке?") -> str:
         """Анализ изображения."""
+        full = ""
+        for chunk in self.analyze_image_stream(image_url, user_input):
+            full += chunk
+        return full
+    
+    def analyze_image_stream(self, image_url: str, user_input: str = "Что изображено на этой картинке?"):
+        """Потоковый анализ изображения — отдаёт чанки через yield."""
         if not self.client:
-            return "Ошибка: LLM клиент не инициализирован."
+            yield "Ошибка: LLM клиент не инициализирован."
+            return
             
         messages = [
             {"role": "system", "content": self.system_prompt},
@@ -497,13 +506,16 @@ class ExistentialTherapistBot:
         
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4o", # �?спользуем модель с поддержкой vision
+                model=os.getenv("VISION_MODEL", "claude-sonnet-5"),  # Используем модель с поддержкой vision
                 messages=messages,
                 max_tokens=500,
+                stream=True
             )
-            return response.choices[0].message.content
+            for chunk in response:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
         except Exception as e:
-            return f"Ошибка анализа изображения: {e}"
+            yield f"Ошибка анализа изображения: {e}"
     
     def transcribe_audio(self, file_path: str) -> str:       
         if not self.client:
@@ -512,7 +524,7 @@ class ExistentialTherapistBot:
         try:
             with open(file_path, "rb") as audio_file:
                 transcription = self.client.audio.transcriptions.create(
-                    model="whisper-1", 
+                    model=os.getenv("WHISPER_MODEL", "whisper-1"), 
                     file=audio_file
                 )
             return transcription.text
@@ -526,7 +538,7 @@ class ExistentialTherapistBot:
         
         try:
             response = self.client.audio.speech.create(
-                model="tts-1",
+                model=os.getenv("TTS_MODEL", "tts-1"),
                 voice="fable",
                 input=text
             )
@@ -536,10 +548,18 @@ class ExistentialTherapistBot:
             return f"Ошибка генерации речи: {e}"    
     def analyze_associations(self, associations: dict[str, list[str]]) -> str:
         """Анализ ассоциаций пользователя."""
+        full = ""
+        for chunk in self.analyze_associations_stream(associations):
+            full += chunk
+        return self._clean_llm_response(full.strip())
+    
+    def analyze_associations_stream(self, associations: dict[str, list[str]]):
+        """Потоковый анализ ассоциаций — отдаёт чанки через yield."""
         print(f"[ANALYZE] Starting association analysis for {len(associations)} categories")
         if not self.rag:
             print("[ANALYZE] RAG not available, returning error")
-            return "Анализ ассоциаций пока недоступен."
+            yield "Анализ ассоциаций пока недоступен."
+            return
 
         print("[ANALYZE] Analyzing associations with RAG...")
         try:
@@ -560,10 +580,10 @@ class ExistentialTherapistBot:
             analysis = self.rag.analyze_user_associations(translated_associations)
         except Exception as e:
             print(f"[ANALYZE] RAG analysis failed: {type(e).__name__}: {e}")
-            return f"Ошибка анализа ассоциаций: {e}"
+            yield f"Ошибка анализа ассоциаций: {e}"
+            return
         print(f"[ANALYZE] RAG analysis complete, found {len(analysis.get('matched_patterns', []))} patterns")
 
-        
         # Определяем доминирующую данность по количеству ассоциаций и совпадениям в базе
         givens_scores = {"freedom": 0, "nonsense": 0, "solitude": 0, "death": 0}
         
@@ -577,7 +597,6 @@ class ExistentialTherapistBot:
             if given in givens_scores:
                 givens_scores[given] += len(words) * 0.5  # Lower weight for word count
 
-        
         # Get dominant given, with fallback if all scores are 0
         if any(givens_scores.values()):
             dominant_given = max(givens_scores.items(), key=lambda x: x[1])[0]
@@ -670,15 +689,14 @@ IMPORTANT: Write only clean text. No HTML tags, no <br> tags. Use only regular l
 Стиль: Плотный, интеллектуальный, но глубоко человечный. Никакой "психологической ваты", только экзистенциальная правда.
 Запрещено: "это может означать", "я предлагаю", "попробуйте". Говори утвердительно и прямо."""
         if not self.client:
-            return "Ошибка: LLM клиент не инициализирован."
+            yield "Ошибка: LLM клиент не инициализирован."
+            return
             
+        # Используем премиум модель для глубокого анализа
+        # Fallback to main model if analysis_model fails
         try:
-            # ?спользуем премиум модель для глубокого анализа
-            # Fallback to main model if analysis_model fails
-            full_response = ""
-            model_to_use = self.analysis_model
             response = self.client.chat.completions.create(
-                model=model_to_use,
+                model=self.analysis_model,
                 messages=[
                     {"role": "system", "content": t(self.language, "irvin_yalom_assoc_analysis")},
                     {"role": "user", "content": prompt}
@@ -687,40 +705,31 @@ IMPORTANT: Write only clean text. No HTML tags, no <br> tags. Use only regular l
                 max_tokens=3000,
                 stream=True
             )
-            # Собираем полный ответ через стриминг
             for chunk in response:
                 if chunk.choices and chunk.choices[0].delta.content:
-                    full_response += chunk.choices[0].delta.content
-        
-            content = full_response.strip()
-            print(f"[ANALYZE] Raw response from LLM: {content[:200]}...")
-        
-            return self._clean_llm_response(content)
+                    yield chunk.choices[0].delta.content
+            return
         except Exception as api_error:
             # Fallback to main model if analysis model fails
             print(f"[ANALYZE] Analysis model failed, trying main model: {api_error}")
-            try:
-                full_response = ""
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": t(self.language, "irvin_yalom_assoc_analysis")},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.7,
-                    max_tokens=3000,
-                    stream=True
-                )
-                for chunk in response:
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        full_response += chunk.choices[0].delta.content
-                content = full_response.strip()
-                print(f"[ANALYZE] Raw response from LLM (fallback): {content[:200]}...")
-
-                return self._clean_llm_response(content)            
-            except Exception as e:
-                print(f"[ANALYZE] Error in analyze_associations: {type(e).__name__}: {e}")
-                return f"Ошибка: {e}"    
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": t(self.language, "irvin_yalom_assoc_analysis")},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=3000,
+                stream=True
+            )
+            for chunk in response:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+        except Exception as e:
+            print(f"[ANALYZE] Error in analyze_associations_stream: {type(e).__name__}: {e}")
+            yield f"Ошибка: {e}"    
     def _clean_llm_response(self, text: str) -> str:        
         """Очистка ответа LLM от тегов <br> и нормализация пробелов."""
         import re
@@ -737,11 +746,23 @@ IMPORTANT: Write only clean text. No HTML tags, no <br> tags. Use only regular l
 
         return text.strip()    
     
-    def analyze_story(self, story: str) -> str:       
+    def analyze_story(self, story: str) -> str:
+        """Анализ истории."""
+        full = ""
+        for chunk in self.analyze_story_stream(story):
+            full += chunk
+        content = full.strip()
+        if not content:
+            return "Ошибка: LLM вернул пустой ответ. Попробуйте ещё раз."
+        return content
+    
+    def analyze_story_stream(self, story: str):
+        """Потоковый анализ истории — отдаёт чанки через yield."""
         print(f"[ANALYZE] Starting story analysis, story length: {len(story)} chars")
         if not self.rag:
             print("[ANALYZE] RAG not available for story analysis, returning error")
-            return "Анализ истории пока недоступен."
+            yield "Анализ истории пока недоступен."
+            return
 
         # Translate story to Russian if session is in English (RAG database is in Russian)
         story_for_rag = story
@@ -753,11 +774,10 @@ IMPORTANT: Write only clean text. No HTML tags, no <br> tags. Use only regular l
             else:
                 print("[ANALYZE] Story translation failed or not needed, using original")
 
-        # �?щем похожие истории в базе
+        # Ищем похожие истории в базе
         print("[ANALYZE] Searching for similar narratives in RAG...")
         try:
             similar_stories = self.rag.search_similar_narratives(story_for_rag, n_results=3)
-
         except Exception as e:
             print(f"[ANALYZE] RAG search failed: {type(e).__name__}: {e}")
             similar_stories = []
@@ -777,7 +797,6 @@ IMPORTANT: Write only clean text. No HTML tags, no <br> tags. Use only regular l
             else:
                 context = context_ru
 
-        
         # Determine dominant given from RAG results, keyword detection, or LLM analysis
         detected = None
         try:
@@ -894,8 +913,6 @@ Respond with ONLY the single word (death, freedom, solitude, or nonsense). No ex
             print(f"[ANALYZE] Error detecting dominant given: {e}")
             self.last_dominant_given = None
 
-
-
         # Формируем промпт на языке сессии
         if self.language == "en":
             prompt = f"""You are Irvin Yalom. Conduct a deep existential analysis of the client's story.
@@ -920,7 +937,7 @@ IMPORTANT: Write only clean text. No HTML tags, no <br> tags. Use only regular l
         else:
             prompt = f"""Ты — Ирвин Ялом. Проведи глубокий экзистенциальный анализ истории клиента.
 
-�?стория клиента:
+История клиента:
 "{story}"
 
 {context}
@@ -931,62 +948,54 @@ IMPORTANT: Write only clean text. No HTML tags, no <br> tags. Use only regular l
 3. Отрази чувства клиента через глубокую метафору.
 4. Свяжи историю с определенной данностью, показав её как корень текущего беспокойства.
 5. Если есть контекст из базы (выше), вплети его как подтверждение универсальности этого страдания.
-6. Заверши ОДН�?М вопросом, который заставит клиента замолчать и заглянуть внутрь себя.
-7. �?спользуй двойные переносы строк (\n\n) для разделения абзацев в ответе.
+6. Заверши ОДНИМ вопросом, который заставит клиента замолчать и заглянуть внутрь себя.
+7. Используй двойные переносы строк (\n\n) для разделения абзацев в ответе.
 
 Стиль: Прямой, эмпатичный, но лишенный сентиментальности. Говори от первого лица. Никакой "психологической ваты".
 Запрещено: "мне кажется", "возможно", "я бы хотел предложить". Говори как терапевт, который видит суть.
-ВАЖНО: Пиши только чистый текст. Никаких HTML-тегов, никаких <br>. �?спользуй только обычные переносы строк."""        
+ВАЖНО: Пиши только чистый текст. Никаких HTML-тегов, никаких <br>. Используй только обычные переносы строк."""
         if not self.client:
-            return "Ошибка: LLM клиент не инициализирован."
+            yield "Ошибка: LLM клиент не инициализирован."
+            return
             
+        # Используем премиум модель для глубокого анализа истории
+        # Fallback to main model if analysis_model fails
         try:
-            # �?спользуем премиум модель для глубокого анализа истории
-            # Fallback to main model if analysis_model fails
-            full_response = ""
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.analysis_model,
-                    messages=[
-                        {"role": "system", "content": t(self.language, "irvin_yalom_story_analysis")},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.7,
-                    max_tokens=3000,
-                    stream=True
-                )
-                # Собираем полный ответ через стриминг
-                for chunk in response:
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        full_response += chunk.choices[0].delta.content
-            except Exception as api_error:
-                # Fallback to main model if analysis model fails
-                print(f"[ANALYZE] Analysis model failed in analyze_story, trying main model: {api_error}")
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": t(self.language, "irvin_yalom_story_analysis")},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.7,
-                    max_tokens=3000,
-                    stream=True
-                )
-                for chunk in response:
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        full_response += chunk.choices[0].delta.content
-            
-            content = full_response.strip()
-            print(f"[ANALYZE] Raw response from LLM (story): {content[:200]}...")
-            
-            if not content or not content.strip():
-                print(f"[ANALYZE] WARNING: LLM returned empty content!")
-                return "Ошибка: LLM вернул пустой ответ. Попробуйте ещё раз."
-            
-            return content        
-        except Exception as e:            
-            print(f"[ANALYZE] Error in analyze_story: {type(e).__name__}: {e}")
-            return f"Ошибка: {e}"                
+            response = self.client.chat.completions.create(
+                model=self.analysis_model,
+                messages=[
+                    {"role": "system", "content": t(self.language, "irvin_yalom_story_analysis")},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=3000,
+                stream=True
+            )
+            for chunk in response:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+            return
+        except Exception as api_error:
+            # Fallback to main model if analysis model fails
+            print(f"[ANALYZE] Analysis model failed in analyze_story, trying main model: {api_error}")
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": t(self.language, "irvin_yalom_story_analysis")},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=3000,
+                stream=True
+            )
+            for chunk in response:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+        except Exception as e:
+            print(f"[ANALYZE] Error in analyze_story_stream: {type(e).__name__}: {e}")
+            yield f"Ошибка: {e}"
     def reset(self):
 
         """Сброс истории диалога."""

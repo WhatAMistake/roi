@@ -22,13 +22,14 @@ wheels/
 
 # Virtual environments
 venv/
+.venv/
 env/
 ENV/
-.venv
 
-# IDEs
+# IDEs / local tools
 .vscode/
 .idea/
+.kodik/
 *.swp
 *.swo
 *~
@@ -37,33 +38,48 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# Environment variables
+# Environment / secrets
 .env
-.env.local
+.env.*
+!.env.example
+docs/.env
 
-# Data
+# User / runtime state
+user_prefs
+user_prefs.json
+data/user_prefs.json
 data/*.json
-data/chromadb/
+data/*.jsonl
 data/*.db
+data/*.sqlite
+data/qdrant_storage/
+data/chromadb/
+data/code_backup/
 !data/.gitkeep
 
-# Logs
+# Logs and temp
 *.log
 logs/
-
-# Temporary files
 temp_audio/
 tmp/
 *.tmp
-
-
-# PDF books
-books/*.pdf
-
-# Backup files
-data/code_backup/
 *.bak
-.env
-user_prefs
-.env
-user_prefs.json
+
+# Tests / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Local media and certs
+books/*.pdf
+books/*.txt
+books/*.docx
+certs/*
+!certs/.gitkeep
+
+# Archives and accidental junk
+*.zip
+*.rar
+*.7z
