@@ -1,0 +1,29 @@
+name: Deploy Roi
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to Aeza
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            set -e
+
+            cd /opt/roi
+
+            git pull --ff-only origin main
+
+            /opt/roi/.venv/bin/pip install -r /opt/roi/requirements.txt
+
+            sudo /usr/bin/systemctl restart roi.service
+            sudo /usr/bin/systemctl is-active roi.service
