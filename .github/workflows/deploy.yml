@@ -10,20 +10,37 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Deploy to Aeza
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          script: |
-            set -e
+      - name: Configure SSH
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
 
-            cd /opt/roi
+          printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
 
-            git pull --ff-only origin main
+          ssh-keygen -y -f ~/.ssh/id_ed25519 > ~/.ssh/id_ed25519.pub
 
-            /opt/roi/.venv/bin/pip install -r /opt/roi/requirements.txt
+          echo "Deploy key fingerprint:"
+          ssh-keygen -lf ~/.ssh/id_ed25519.pub
 
-            sudo /usr/bin/systemctl restart roi.service
-            sudo /usr/bin/systemctl is-active roi.service
+          ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy Roi
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+        run: |
+          ssh \
+            -i ~/.ssh/id_ed25519 \
+            -o IdentitiesOnly=yes \
+            "$SERVER_USER@$SERVER_HOST" '
+              set -e
+              cd /opt/roi
+              git pull --ff-only origin main
+              /opt/roi/.venv/bin/pip install -r /opt/roi/requirements.txt
+              sudo /usr/bin/systemctl restart roi.service
+              sudo /usr/bin/systemctl is-active roi.service
+            '
