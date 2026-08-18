@@ -2309,23 +2309,28 @@ class TelegramTherapistBot:
         await message.answer(t(lang, "void_msg"), parse_mode="HTML")
 
     async def _send_void_spacer(self, message: types.Message) -> None:
-        """Send a large empty-looking message that Telegram will accept."""
-        # Candidates ordered by how "blank" they tend to look in clients.
-        # Each line needs a non-trimmable char or Telegram collapses / rejects it.
-        # Aim for a wide + tall bubble (near mobile bubble width).
-        rows = 12
+        """Send a wide+tall empty-looking bubble that Telegram clients actually show.
+
+        Pure whitespace / ideographic spaces are often accepted by Bot API but
+        collapse to nothing in clients. Hangul fillers + <pre> reserve real space.
+        """
+        rows = 10
+        # Em-wide fillers ~ mobile bubble width; keep under TG limits.
+        width = 24
+
+        def block(char: str, w: int = width) -> str:
+            return "\n".join([char * w] * rows)
+
+        # Prefer formats that force layout box in official clients.
+        hangul = block("\u3164")  # Hangul Filler — classic TG blank
+        braille = block("\u2800")  # Braille Pattern Blank
         candidates = [
-            # Fullwidth ideographic spaces — each char is ~1em wide.
-            "\n".join(["\u3000" * 40] * rows),
-            # NBSP block (narrower glyphs → more chars)
-            "\n".join(["\u00A0" * 80] * rows),
-            # Braille blank
-            "\n".join(["\u2800" * 48] * rows),
-            # HTML nbsp (explicit entities)
-            ("\n".join(["&nbsp;" * 80] * rows), "HTML"),
-            # Last resort: monospaced spaces (slightly visible box on some clients,
-            # but still a real spacer — never "...").
-            ("<pre>" + "\n".join([" " * 80] * rows) + "</pre>", "HTML"),
+            # <pre> keeps width/height even when glyphs are blank-looking
+            (f"<pre>{hangul}</pre>", "HTML"),
+            hangul,
+            (f"<pre>{braille}</pre>", "HTML"),
+            braille,
+            (f"<code>{hangul}</code>", "HTML"),
         ]
 
         last_err = None
@@ -2333,18 +2338,21 @@ class TelegramTherapistBot:
             try:
                 if isinstance(item, tuple):
                     text, parse_mode = item
-                    await message.answer(text, parse_mode=parse_mode)
+                    sent = await message.answer(text, parse_mode=parse_mode)
                 else:
-                    await message.answer(item)
-                return
+                    sent = await message.answer(item)
+                body = (getattr(sent, "text", None) or getattr(sent, "caption", None) or "")
+                # Must keep some non-space content or clients may draw nothing.
+                if sent and any(ch not in " \t\r\n\u00a0\u3000" for ch in body):
+                    return
             except Exception as e:
                 last_err = e
                 continue
 
         print(f"[VOID] All spacers failed: {type(last_err).__name__}: {last_err}")
-        # Absolute fallback: still avoid "..."; one NBSP keeps API happy.
         try:
-            await message.answer("\u00A0")
+            # Visible-enough last resort: pre block with hangul, never "...".
+            await message.answer(f"<pre>{chr(0x3164) * width}</pre>", parse_mode="HTML")
         except Exception as e:
             print(f"[VOID] Final fallback failed: {type(e).__name__}: {e}")
 
