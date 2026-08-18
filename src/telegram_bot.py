@@ -1899,16 +1899,24 @@ class TelegramTherapistBot:
             max_length = 4000
             if len(final_text) > max_length:
                 # Если длинное — удаляем стрим-сообщение и отправляем частями
-                await sent.delete()
-                parts = [final_text[i:i+max_length] for i in range(0, len(final_text), max_length)]
-                for i, part in enumerate(parts):
-                    reply_markup = get_main_keyboard(lang) if i == len(parts) - 1 else None
-                    await message.answer(part, parse_mode="HTML", reply_markup=reply_markup)
-            else:
                 try:
-                    await sent.edit_text(final_text, parse_mode="HTML", reply_markup=get_main_keyboard(lang))
+                    await sent.delete()
                 except Exception:
-                    await message.answer(final_text, parse_mode="HTML", reply_markup=get_main_keyboard(lang))
+                    pass
+                parts = self._split_text(final_text, max_length)
+                for i, part in enumerate(parts):
+                    kwargs = {"parse_mode": "HTML"}
+                    if i == len(parts) - 1:
+                        kwargs["reply_markup"] = get_main_keyboard(lang)
+                    await message.answer(part, **kwargs)
+            else:
+                # ReplyKeyboardMarkup cannot be attached via editMessageText.
+                # Stream already showed the text; don't send a second copy if edit fails.
+                try:
+                    await sent.edit_text(final_text, parse_mode="HTML")
+                except Exception:
+                    pass
+
     async def _handle_story_input(self, message: types.Message, text: str):        
         """Обработка ввода истории."""
         user_id = message.from_user.id
@@ -1959,18 +1967,24 @@ class TelegramTherapistBot:
         max_length = 4000
         if len(final_text) > max_length:
             # Если длинное — удаляем стрим-сообщение и отправляем частями
-            await sent.delete()
-            parts = [final_text[i:i+max_length] for i in range(0, len(final_text), max_length)]
+            try:
+                await sent.delete()
+            except Exception:
+                pass
+            parts = self._split_text(final_text, max_length)
             for i, part in enumerate(parts):
                 kwargs = {"parse_mode": "HTML"}
                 if i == len(parts) - 1:
                     kwargs["reply_markup"] = get_main_keyboard(lang)
                 await message.answer(part, **kwargs)
         else:
+            # ReplyKeyboardMarkup cannot be attached via editMessageText.
+            # Stream already showed the text; don't send a second copy if edit fails.
             try:
-                await sent.edit_text(final_text, parse_mode="HTML", reply_markup=get_main_keyboard(lang))
+                await sent.edit_text(final_text, parse_mode="HTML")
             except Exception:
-                await message.answer(final_text, parse_mode="HTML", reply_markup=get_main_keyboard(lang))        
+                pass
+
     async def _handle_meaning(self, message: types.Message):
         user_id = message.from_user.id
         lang = self.user_langs.get(user_id, DEFAULT_LANG)
@@ -2083,7 +2097,7 @@ class TelegramTherapistBot:
             await self.bot.send_message(chat_id, text, parse_mode=parse_mode, reply_markup=reply_markup)
         else:
             # Attach keyboard only to the last chunk so it stays visible after long previews.
-            chunks = [text[i:i + 4000] for i in range(0, len(text), 4000)]
+            chunks = self._split_text(text, 4000)
             for idx, chunk in enumerate(chunks):
                 kwargs = {"parse_mode": parse_mode}
                 if reply_markup is not None and idx == len(chunks) - 1:
@@ -2671,14 +2685,22 @@ class TelegramTherapistBot:
             return
 
         full_response = strip_markdown(full_response)
-        if len(full_response) <= 4000:
+        max_length = 4000
+        if len(full_response) > max_length:
+            try:
+                await sent.delete()
+            except Exception:
+                pass
+            parts = self._split_text(full_response, max_length)
+            for part in parts:
+                await message.answer(part)
+        else:
+            # Last stream edit already has the full text; a failed
+            # "message is not modified" must not send a second copy.
             try:
                 await sent.edit_text(full_response)
             except Exception:
-                await message.answer(full_response)
-        else:
-            await sent.delete()
-            await message.answer(full_response)
+                pass
     async def _check_and_notify_updates(self):
         """Check for code updates and notify all active users."""
         try:
