@@ -2301,60 +2301,69 @@ class TelegramTherapistBot:
         user_id = message.from_user.id
         lang = self.user_langs.get(user_id, DEFAULT_LANG)
 
-        # Tall blank spacer, then the quote after a pause.
-        # Telegram treats pure whitespace / some "blank" glyphs as empty and
-        # rejects them — never fall back to a visible "...".
+        # Wide blank block (photo), pause, then the quote.
+        # Text-only "blank" glyphs are accepted by Bot API but often collapse
+        # to nothing in clients — a solid white PNG always reserves space.
         await self._send_void_spacer(message)
         await asyncio.sleep(3)
         await message.answer(t(lang, "void_msg"), parse_mode="HTML")
 
+    @staticmethod
+    def _void_spacer_png(width: int = 900, height: int = 520) -> bytes:
+        """Build a solid near-white PNG without Pillow (stdlib only)."""
+        import struct
+        import zlib
+
+        # Slightly off-white so dark/light themes still show a soft panel.
+        r, g, b = 250, 250, 250
+        raw = b"".join(b"\x00" + bytes([r, g, b]) * width for _ in range(height))
+
+        def chunk(tag: bytes, data: bytes) -> bytes:
+            return (
+                struct.pack(">I", len(data))
+                + tag
+                + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+            )
+
+        return b"".join(
+            [
+                b"\x89PNG\r\n\x1a\n",
+                chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)),
+                chunk(b"IDAT", zlib.compress(raw, 9)),
+                chunk(b"IEND", b""),
+            ]
+        )
+
     async def _send_void_spacer(self, message: types.Message) -> None:
-        """Send a wide+tall empty-looking bubble that Telegram clients actually show.
-
-        Pure whitespace / ideographic spaces are often accepted by Bot API but
-        collapse to nothing in clients. Hangul fillers + <pre> reserve real space.
-        """
-        rows = 10
-        # Em-wide fillers ~ mobile bubble width; keep under TG limits.
-        width = 24
-
-        def block(char: str, w: int = width) -> str:
-            return "\n".join([char * w] * rows)
-
-        # Prefer formats that force layout box in official clients.
-        hangul = block("\u3164")  # Hangul Filler — classic TG blank
-        braille = block("\u2800")  # Braille Pattern Blank
-        candidates = [
-            # <pre> keeps width/height even when glyphs are blank-looking
-            (f"<pre>{hangul}</pre>", "HTML"),
-            hangul,
-            (f"<pre>{braille}</pre>", "HTML"),
-            braille,
-            (f"<code>{hangul}</code>", "HTML"),
-        ]
-
-        last_err = None
-        for item in candidates:
-            try:
-                if isinstance(item, tuple):
-                    text, parse_mode = item
-                    sent = await message.answer(text, parse_mode=parse_mode)
-                else:
-                    sent = await message.answer(item)
-                body = (getattr(sent, "text", None) or getattr(sent, "caption", None) or "")
-                # Must keep some non-space content or clients may draw nothing.
-                if sent and any(ch not in " \t\r\n\u00a0\u3000" for ch in body):
-                    return
-            except Exception as e:
-                last_err = e
-                continue
-
-        print(f"[VOID] All spacers failed: {type(last_err).__name__}: {last_err}")
+        """Send a wide+tall empty panel that Telegram clients actually show."""
         try:
-            # Visible-enough last resort: pre block with hangul, never "...".
-            await message.answer(f"<pre>{chr(0x3164) * width}</pre>", parse_mode="HTML")
+            photo = types.BufferedInputFile(
+                self._void_spacer_png(),
+                filename="void.png",
+            )
+            await message.answer_photo(photo)
+            return
         except Exception as e:
-            print(f"[VOID] Final fallback failed: {type(e).__name__}: {e}")
+            print(f"[VOID] Photo spacer failed: {type(e).__name__}: {e}")
+
+        # Text fallback: force a real mono box with a barely-visible fullwidth dot
+        # on each edge so clients cannot collapse the bubble to zero size.
+        try:
+            rows = 12
+            width = 20
+            # U+FF0E fullwidth full stop — nearly invisible at edges, keeps layout.
+            edge = "\uff0e"
+            fill = "\u3000"  # ideographic space
+            lines = []
+            for i in range(rows):
+                if i in (0, rows - 1):
+                    lines.append(edge + fill * (width - 2) + edge)
+                else:
+                    lines.append(fill * width)
+            await message.answer("<pre>" + "\n".join(lines) + "</pre>", parse_mode="HTML")
+        except Exception as e:
+            print(f"[VOID] Text spacer failed: {type(e).__name__}: {e}")
 
     async def _handle_chat(self, message: types.Message, text: str, is_voice: bool = False):
         """Обработка обычного чата."""
