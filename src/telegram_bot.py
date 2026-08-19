@@ -879,7 +879,7 @@ class TelegramTherapistBot:
             # Временно добавляем системную инструкцию для генерации метафоры
             response = therapist.generate_response(meta_prompt, temporary_system_instruction=meta_prompt, use_analysis_model=True)
             
-            await message.answer(f"✨ <b>{('Метафора' if lang == 'ru' else 'Metaphor')}:</b>\n\n{html.escape(response)}", parse_mode="HTML")
+            await message.answer(f"<b>{('Наблюдение' if lang == 'ru' else 'Remarque')}:</b>\n\n{html.escape(response)}", parse_mode="HTML")
 
         @self.dp.message(Command("silence"))
         async def cmd_silence(message: types.Message):
