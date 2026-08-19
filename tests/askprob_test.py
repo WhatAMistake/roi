@@ -12,12 +12,9 @@ def count_ask_instructions(prob, iterations=200):
     count = 0
     for _ in range(iterations):
         msgs = bot._build_messages('I am not sure about my decisions and feel lost')
-        # second system message is at index 1
-        if len(msgs) > 1 and isinstance(msgs[1].get('content'), str):
-            content = msgs[1]['content']
-            if 'Ask ONE' in content or 'Do NOT' in content:
-                if 'Ask ONE' in content:
-                    count += 1
+        system_msgs = [m.get('content', '') for m in msgs if m.get('role') == 'system']
+        if any('Ask ONE' in content for content in system_msgs):
+            count += 1
     return count
 
 

@@ -5,7 +5,7 @@ import logging
 import re
 from typing import Any, Optional
 
-from openai import OpenAI
+from llm_client import create_openai_client
 
 from .config import (
     SCENE_BUILDER_SYSTEM_PROMPT,
@@ -217,7 +217,7 @@ class SceneBuilder:
     """Builds a film-photograph scene description from user's inner state text."""
 
     def __init__(self, api_key: str, api_base: str, model: Optional[str] = None):
-        self.client = OpenAI(api_key=api_key, base_url=api_base)
+        self.client = create_openai_client(api_key=api_key, base_url=api_base)
         self.model = model or FILM_FRAME_SCENE_LLM_MODEL
 
     def _request(self, user_description: str, *, force_json_mode: bool) -> str:

@@ -5,6 +5,8 @@
 
 import os
 import json
+import re
+from collections import deque
 from pathlib import Path
 from typing import Optional, Generator
 from dataclasses import dataclass
@@ -18,6 +20,8 @@ from lang_utils import detect_language
 # Загружаем переменные окружения
 load_dotenv()
 
+_COMPLETE_REPLY_END = re.compile(r'[.!?\u2026]+["\u00bb\u201d\'\u00ab]?\s*$')
+
 
 @dataclass
 class Message:
@@ -28,6 +32,10 @@ _global_rag = None
 
 class ExistentialTherapistBot:    
     """Экзистенциальный терапевт-бот."""
+
+    CHAT_MAX_TOKENS = 4096
+    ANALYSIS_MAX_TOKENS = 8192
+    MAX_COMPLETION_CONTINUATIONS = 2
     
     def __init__(
         self,
@@ -77,6 +85,7 @@ class ExistentialTherapistBot:
         self._init_llm()
         # Last detected dominant given (session-scoped, not persisted)
         self.last_dominant_given: Optional[str] = None
+        self.last_techniques: deque[str] = deque(maxlen=2)
     
     def _load_system_prompt(self) -> str:
         """Загрузка system prompt."""
@@ -118,8 +127,8 @@ class ExistentialTherapistBot:
     def _init_llm(self):
         """�?нициализация LLM клиента."""
         try:
-            from openai import OpenAI
-            self.client = OpenAI(
+            from llm_client import create_openai_client
+            self.client = create_openai_client(
                 api_key=self.api_key,
                 base_url=self.api_base
             )
@@ -128,109 +137,200 @@ class ExistentialTherapistBot:
             print("openai не установлен. Установите: pip install openai")
             self.client = None
 
-    def select_technique(self, user_input: str) -> Optional[str]:
-        """Deterministically choose a suitable technique key based on user_input keywords."""
+    _ACK_PHRASES = {
+        "ok", "okay", "k", "kk", "yep", "yeah", "yes", "no", "nope",
+        "idk", "hmm", "hm", "sure", "thanks", "thank you", "lol",
+        "ок", "окей", "угу", "ага", "да", "нет", "не знаю", "хз",
+        "мм", "ммм", "мгм", "ну", "понял", "поняла", "понятно", "ясно",
+        "ладно", "хорошо", "конечно", "спс", "спасибо", "возможно", "наверное",
+    }
+    _PANIC_MARKERS = (
+        "паник", "panic", "не могу дышать", "немогу дышать",
+        "can't breathe", "cant breathe", "cannot breathe", "hyperventil",
+        "задыха", "накрыло", "накрывает", "overwhelm",
+        "трясет", "трясёт", "shaking", "сердце колот", "перегруз",
+    )
+    _CRISIS_MARKERS = _PANIC_MARKERS + (
+        "смерт", "умира", "умру", "умер", "суицид", "поконч",
+        "погиб", "death", "dying", "suicid", "kill myself", "want to die",
+        "мне плохо", "не могу", "невыносим", "погибаю",
+        "схожу с ума", "dead inside", "unbearable",
+    )
+
+    def _normalize_turn(self, user_input: str) -> str:
+        s = (user_input or "").strip().lower()
+        s = re.sub(r"[.!?\u2026,;:]+", "", s)
+        return re.sub(r"\s+", " ", s).strip()
+
+    def _is_panic(self, text: str) -> bool:
+        s = (text or "").lower()
+        return any(k in s for k in self._PANIC_MARKERS)
+
+    def _is_crisis_or_weight(self, text: str) -> bool:
+        s = (text or "").lower()
+        return any(k in s for k in self._CRISIS_MARKERS)
+
+    def classify_reply_register(self, user_input: str) -> str:
+        """Cheap length register for chat turns: minimal / short / normal / long."""
+        if not user_input or not user_input.strip():
+            return "minimal"
+
+        raw = user_input.strip()
+        normalized = self._normalize_turn(raw)
+        words = normalized.split()
+        word_count = len(words)
+
+        if self._is_crisis_or_weight(raw):
+            sentence_ends = raw.count(".") + raw.count("!") + raw.count("?") + raw.count("\u2026")
+            if word_count >= 40 or raw.count("\n") >= 2 or sentence_ends >= 3:
+                return "long"
+            return "normal"
+
+        if not normalized or normalized in self._ACK_PHRASES:
+            return "minimal"
+
+        if word_count <= 12:
+            return "short"
+
+        sentence_ends = raw.count(".") + raw.count("!") + raw.count("?") + raw.count("\u2026")
+        if word_count >= 40 or raw.count("\n") >= 2 or sentence_ends >= 3:
+            return "long"
+
+        return "normal"
+
+    def _pick_technique(self, candidates: list[str], allow_repeat: bool = False) -> Optional[str]:
         import random
-        
-        # 1. Prefer last detected dominant given from associations/story if available
-        # We add some variety here by picking between a primary and secondary technique
+
+        if not candidates:
+            return None
+        recent = list(getattr(self, "last_techniques", []) or [])
+        pool = candidates if allow_repeat else [c for c in candidates if c not in recent] or candidates
+        return random.choice(pool)
+
+    def _remember_technique(self, tech: Optional[str]) -> None:
+        if not tech:
+            return
+        recent = getattr(self, "last_techniques", None)
+        if recent is None:
+            self.last_techniques = deque(maxlen=2)
+            recent = self.last_techniques
+        recent.append(tech)
+
+    def select_technique(self, user_input: str) -> Optional[str]:
+        """Choose a technique key, or None when the turn only needs listening."""
+        if not user_input or not user_input.strip():
+            return None
+
+        register = self.classify_reply_register(user_input)
+        if register == "minimal":
+            return None
+
+        s = user_input.lower()
+
+        # Panic / overwhelm only — the sole path to grounding.
+        if self._is_panic(s):
+            return self._pick_technique(["grounding", "mindfulness", "somatic"], allow_repeat=True)
+
+        # Prefer last detected dominant given from associations/story if available.
         try:
-            if getattr(self, 'last_dominant_given', None):
+            if getattr(self, "last_dominant_given", None):
                 lg = self.last_dominant_given
                 mapping = {
-                    'death': ['epitaph', 'socratic'],
-                    'freedom': ['behavioral', 'paradox'],
-                    'solitude': ['narrative', 'socratic'],
-                    'nonsense': ['logotherapy', 'scaling']
+                    "death": ["epitaph", "socratic"],
+                    "freedom": ["behavioral", "paradox"],
+                    "solitude": ["narrative", "socratic"],
+                    "nonsense": ["logotherapy", "scaling"],
                 }
                 if lg in mapping:
-                    return random.choice(mapping[lg])
+                    return self._pick_technique(mapping[lg])
         except Exception:
             pass
 
-        if not user_input:
-            return None
-        s = user_input.lower()
-        
-        # 2. Keyword-based detection for existential givens and states
-        
         # Death (Смерть) -> epitaph
-        if any(k in s for k in ("смерт", "умира", "умру", "конечн", "похорон", "кладбищ", "утрат", "death", "dying", "mortality", "funeral", "loss")):
-            return "epitaph"
-        
+        if any(k in s for k in ("смерт", "умира", "умру", "умер", "погиб", "суицид", "конечн", "похорон", "кладбищ", "утрат", "death", "dying", "mortality", "funeral", "loss", "suicid")):
+            return self._pick_technique(["epitaph"])
+
         # Freedom & Responsibility (Свобода и ответственность) -> behavioral
         if any(k in s for k in ("свобод", "выбор", "решен", "ответствен", "виноват", "вину", "freedom", "choice", "decision", "responsibility", "guilt")):
-            return "behavioral"
-            
+            return self._pick_technique(["behavioral"])
+
         # Isolation (Одиночество) -> narrative
         if any(k in s for k in ("одинок", "одиноч", "изолир", "разрыв", "бросил", "никто не", "lonely", "loneliness", "isolat", "abandoned", "nobody")):
-            return "narrative"
-            
+            return self._pick_technique(["narrative"])
+
         # Meaninglessness (Бессмысленность) -> logotherapy
         if any(k in s for k in ("смысл", "бессмыс", "пустот", "зачем", "ради чего", "meaning", "meaningless", "purpose", "empty", "why bother")):
-            return "logotherapy"
+            return self._pick_technique(["logotherapy"])
 
-        # Anxiety/Panic -> mindfulness or grounding
-        if any(k in s for k in ("тревог", "тревож", "паник", "страх", "паника", "anxiety", "panic", "afraid", "fear")):
-            return random.choice(["mindfulness", "grounding"])
-            
+        # Generic fear / anxiety — not panic, so not grounding.
+        if any(k in s for k in ("тревог", "тревож", "страх", "страшн", "anxiety", "afraid", "fear", "scared")):
+            return self._pick_technique(["socratic", "labeling"])
+
         # Somatic/Body focus -> somatic
         if any(k in s for k in ("тело", "телесн", "груди", "дыхан", "сердце", "живот", "сжимает", "трясет", "body", "somatic", "breath", "chest", "heart", "stomach", "shaking")):
-            return "somatic"
+            return self._pick_technique(["somatic"])
 
-        # Deep pain/trauma/crisis -> labeling (NOT scaling - it's inappropriate for deep pain)
-        # Only extreme indicators, not common words like "very" or "pain"
+        # Deep pain/trauma/crisis -> labeling (NOT scaling)
         if any(k in s for k in (
-            # Russian - extreme trauma/crisis only
             "невыносим", "не выношу", "разрывает", "сжирает", "уничтожает",
             "падаю в пропасть", "дна нет", "погибаю", "схожу с ума",
             "не могу дышать", "парализован", "окаменел", "мертв внутри",
-            # English - extreme trauma/crisis only
             "unbearable", "can't bear", "tearing me apart", "consuming me",
             "destroying me", "falling apart", "no bottom", "going crazy",
-            "can't breathe", "paralyzed", "numb inside", "dead inside"
+            "can't breathe", "paralyzed", "numb inside", "dead inside",
         )):
-            return "labeling"
-
-
+            return self._pick_technique(["labeling"])
 
         # Avoidance -> paradox
         if any(k in s for k in ("избег", "избегаю", "не делаю", "откладыв", "avoid", "avoiding", "avoidance", "procrastin")):
-            return "paradox"
+            return self._pick_technique(["paradox"])
 
-        # 3. Fallback heuristics
-        if len(s.split()) < 6:
-            # short messages — grounding or labeling
-            return random.choice(["grounding", "labeling"])
-            
-        # default to a subtle intervention: socratic questioning
-        return "socratic"    
+        if self._is_crisis_or_weight(s):
+            return self._pick_technique(["labeling"])
+
+        if register == "short":
+            return None
+
+        if register == "long":
+            return self._pick_technique(["socratic", "narrative"])
+
+        return self._pick_technique(["socratic"])
     def _build_messages(self, user_input: str) -> list[dict]:
         """Построение сообщений для API."""
         # Add clean text instruction to avoid markdown
         clean_text_instr = "\n\nВАЖНО: Только чистый текст. Без звёздочек *, без жирного текста, без markdown-форматирования. HTML теги разрешены только если они явно нужны для структуры." if self.language == "ru" else "\n\nIMPORTANT: Clean text only. No asterisks *, no bold text, no markdown formatting. HTML tags allowed only when explicitly needed for structure."
         
         messages = [{"role": "system", "content": self.system_prompt + clean_text_instr}]
+        register = self.classify_reply_register(user_input)
+        skip_extras = register == "minimal"
+
+        if register == "minimal":
+            messages.append({"role": "system", "content": t(self.language, "reply_register_minimal")})
+        elif register == "short":
+            messages.append({"role": "system", "content": t(self.language, "reply_register_short")})
+        elif register == "long":
+            messages.append({"role": "system", "content": t(self.language, "reply_register_long")})
         
         # 1. Поиск по ассоциациям (Keyword-based RAG)
 
         assoc_context = []
-        words = [w.strip().lower() for w in user_input.replace(',', ' ').replace(';', ' ').split() if len(w) > 3]
-        if self.rag:
-            for word in words:
-                matches = self.rag.search_associations(word)
-                if matches:
-                    for m in matches[:2]:
-                        if m.get('narratives', {}).get('free_form'):
-                            # Build context in Russian (from RAG database)
-                            context_ru = f"Человек с похожей ассоциацией ('{word}') на тему '{m['matched_givens']}': {m['narratives']['free_form']}"
-                            
-                            # Translate to English if session is in English
-                            if self.language == "en":
-                                context_en = self._translate_text(context_ru, target_lang='en')
-                                assoc_context.append(context_en)
-                            else:
-                                assoc_context.append(context_ru)
+        if not skip_extras:
+            words = [w.strip().lower() for w in user_input.replace(',', ' ').replace(';', ' ').split() if len(w) > 3]
+            if self.rag:
+                for word in words:
+                    matches = self.rag.search_associations(word)
+                    if matches:
+                        for m in matches[:2]:
+                            if m.get('narratives', {}).get('free_form'):
+                                # Build context in Russian (from RAG database)
+                                context_ru = f"Человек с похожей ассоциацией ('{word}') на тему '{m['matched_givens']}': {m['narratives']['free_form']}"
+                                
+                                # Translate to English if session is in English
+                                if self.language == "en":
+                                    context_en = self._translate_text(context_ru, target_lang='en')
+                                    assoc_context.append(context_en)
+                                else:
+                                    assoc_context.append(context_ru)
         
         if assoc_context:
             header = "Context from others with similar associations:\n" if self.language == "en" else "Контекст из опыта других людей с похожими ассоциациями:\n"
@@ -242,25 +342,26 @@ class ExistentialTherapistBot:
 
         # Suggest a context-appropriate therapeutic technique (deterministic heuristic)
 
-        try:
-            tech = self.select_technique(user_input)
-            if tech:
-                tech_label = tech
-                # localized description
-                try:
-                    tech_desc = __import__('i18n').i18n.t(self.language, f"technique_{tech_label}")
-                except Exception:
-                    # fallback to english mapping defined locally
-                    tech_desc = tech_label
-                messages.append({
-                    "role": "system",
-                    "content": t(self.language, "incorporate_technique", tech_desc=tech_desc)
-                })
-        except Exception:
-            pass
+        if not skip_extras:
+            try:
+                tech = self.select_technique(user_input)
+                if tech:
+                    tech_label = tech
+                    # localized description
+                    try:
+                        tech_desc = t(self.language, f"technique_{tech_label}")
+                    except Exception:
+                        tech_desc = tech_label
+                    messages.append({
+                        "role": "system",
+                        "content": t(self.language, "incorporate_technique", tech_desc=tech_desc)
+                    })
+                    self._remember_technique(tech)
+            except Exception:
+                pass
         
         # Добавляем RAG контекст (с опциональным переводом в язык сессии)
-        if self.rag and self.use_rag:
+        if not skip_extras and self.rag and self.use_rag:
             context = self.rag.get_context_for_query(user_input)
             if context:
                 try:
@@ -295,11 +396,14 @@ class ExistentialTherapistBot:
         
         # CRITICAL: Question control instruction must be LAST system message before user
         # This ensures it takes precedence over all other instructions
-        try:
-            import random
-            ask_flag = random.random() < float(self.ask_question_prob)
-        except Exception:
+        if skip_extras:
             ask_flag = False
+        else:
+            try:
+                import random
+                ask_flag = random.random() < float(self.ask_question_prob)
+            except Exception:
+                ask_flag = False
 
         if ask_flag:
             messages.append({
@@ -317,6 +421,112 @@ class ExistentialTherapistBot:
         
         return messages
 
+    def _looks_complete(self, text: str) -> bool:
+        if not text or not str(text).strip():
+            return False
+        return bool(_COMPLETE_REPLY_END.search(str(text).rstrip()))
+
+    def _needs_continuation(self, text: str, finish_reason: Optional[str]) -> bool:
+        reason = (finish_reason or "").lower()
+        if reason in {"length", "max_tokens"}:
+            return True
+        return not self._looks_complete(text)
+
+    def _continuation_messages(self, messages: list[dict], partial: str) -> list[dict]:
+        return list(messages) + [
+            {"role": "assistant", "content": partial},
+            {"role": "user", "content": t(self.language, "continue_truncated_reply")},
+        ]
+
+    def _create_completion(
+        self,
+        *,
+        model: str,
+        messages: list[dict],
+        temperature: float,
+        max_tokens: int,
+        stream: bool = False,
+    ):
+        kwargs = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if stream:
+            kwargs["stream"] = True
+        return self.client.chat.completions.create(**kwargs)
+
+    def _complete_text(
+        self,
+        *,
+        model: str,
+        messages: list[dict],
+        temperature: float,
+        max_tokens: int,
+    ) -> str:
+        text = ""
+        current_messages = messages
+        for attempt in range(self.MAX_COMPLETION_CONTINUATIONS + 1):
+            response = self._create_completion(
+                model=model,
+                messages=current_messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            choice = response.choices[0]
+            piece = choice.message.content or ""
+            text += piece
+            finish_reason = getattr(choice, "finish_reason", None)
+            if not self._needs_continuation(text, finish_reason) or not piece.strip():
+                break
+            print(
+                f"[GEN] Continuing truncated reply "
+                f"(attempt={attempt + 1}, finish_reason={finish_reason})"
+            )
+            current_messages = self._continuation_messages(messages, text)
+        return text
+
+    def _complete_stream(
+        self,
+        *,
+        model: str,
+        messages: list[dict],
+        temperature: float,
+        max_tokens: int,
+    ) -> Generator[str, None, None]:
+        assembled = ""
+        current_messages = messages
+        for attempt in range(self.MAX_COMPLETION_CONTINUATIONS + 1):
+            response = self._create_completion(
+                model=model,
+                messages=current_messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True,
+            )
+            piece = ""
+            finish_reason = None
+            for chunk in response:
+                if not chunk.choices:
+                    continue
+                choice = chunk.choices[0]
+                reason = getattr(choice, "finish_reason", None)
+                if reason:
+                    finish_reason = reason
+                delta = getattr(choice, "delta", None)
+                content = getattr(delta, "content", None) if delta is not None else None
+                if content:
+                    piece += content
+                    assembled += content
+                    yield content
+            if not self._needs_continuation(assembled, finish_reason) or not piece.strip():
+                return
+            print(
+                f"[STREAM] Continuing truncated reply "
+                f"(attempt={attempt + 1}, finish_reason={finish_reason})"
+            )
+            current_messages = self._continuation_messages(messages, assembled)
 
     def _translate_text(self, text: str, target_lang: str) -> str:
         """Translate `text` into `target_lang` ('en' or 'ru') using the LLM client.
@@ -385,13 +595,12 @@ class ExistentialTherapistBot:
         
         try:
             print(f"[GEN DEBUG] Sending {len(messages)} messages to API, model: {selected_model}")
-            response = self.client.chat.completions.create(
+            return self._complete_text(
                 model=selected_model,
                 messages=messages,
                 temperature=0.8, # Чуть выше для метафор
-                max_tokens=2000
+                max_tokens=self.CHAT_MAX_TOKENS,
             )
-            return response.choices[0].message.content
         except Exception as e:
             print(f"[GEN ERROR] API call failed: {type(e).__name__}: {e}")
             return f"Ошибка: {e}"
@@ -406,14 +615,12 @@ class ExistentialTherapistBot:
         messages = self._build_messages(user_input)
         
         try:
-            response = self.client.chat.completions.create(
+            assistant_message = self._complete_text(
                 model=self.model,
                 messages=messages,
                 temperature=0.7,
-                max_tokens=2000
+                max_tokens=self.CHAT_MAX_TOKENS,
             )
-            
-            assistant_message = response.choices[0].message.content
             
             # Сохраняем в историю
             self.history.append(Message(role="user", content=user_input))
@@ -451,20 +658,15 @@ class ExistentialTherapistBot:
         
         try:
             print(f"[STREAM DEBUG] Sending {len(messages)} messages to API, model: {self.model}")
-            response = self.client.chat.completions.create(
+            full_response = ""
+            for content in self._complete_stream(
                 model=self.model,
                 messages=messages,
                 temperature=0.7,
-                max_tokens=2000,
-                stream=True
-            )
-            
-            full_response = ""
-            for chunk in response:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    content = chunk.choices[0].delta.content
-                    full_response += content
-                    yield content
+                max_tokens=self.CHAT_MAX_TOKENS,
+            ):
+                full_response += content
+                yield content
             
             # Сохраняем в историю
             self.history.append(Message(role="user", content=user_input))
@@ -694,39 +896,29 @@ IMPORTANT: Write only clean text. No HTML tags, no <br> tags. Use only regular l
             
         # Используем премиум модель для глубокого анализа
         # Fallback to main model if analysis_model fails
+        assoc_messages = [
+            {"role": "system", "content": t(self.language, "irvin_yalom_assoc_analysis")},
+            {"role": "user", "content": prompt},
+        ]
         try:
-            response = self.client.chat.completions.create(
+            yield from self._complete_stream(
                 model=self.analysis_model,
-                messages=[
-                    {"role": "system", "content": t(self.language, "irvin_yalom_assoc_analysis")},
-                    {"role": "user", "content": prompt}
-                ],
+                messages=assoc_messages,
                 temperature=0.7,
-                max_tokens=3000,
-                stream=True
+                max_tokens=self.ANALYSIS_MAX_TOKENS,
             )
-            for chunk in response:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
             return
         except Exception as api_error:
             # Fallback to main model if analysis model fails
             print(f"[ANALYZE] Analysis model failed, trying main model: {api_error}")
         
         try:
-            response = self.client.chat.completions.create(
+            yield from self._complete_stream(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": t(self.language, "irvin_yalom_assoc_analysis")},
-                    {"role": "user", "content": prompt}
-                ],
+                messages=assoc_messages,
                 temperature=0.7,
-                max_tokens=3000,
-                stream=True
+                max_tokens=self.ANALYSIS_MAX_TOKENS,
             )
-            for chunk in response:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
         except Exception as e:
             print(f"[ANALYZE] Error in analyze_associations_stream: {type(e).__name__}: {e}")
             yield f"Ошибка: {e}"    
@@ -960,39 +1152,29 @@ IMPORTANT: Write only clean text. No HTML tags, no <br> tags. Use only regular l
             
         # Используем премиум модель для глубокого анализа истории
         # Fallback to main model if analysis_model fails
+        story_messages = [
+            {"role": "system", "content": t(self.language, "irvin_yalom_story_analysis")},
+            {"role": "user", "content": prompt},
+        ]
         try:
-            response = self.client.chat.completions.create(
+            yield from self._complete_stream(
                 model=self.analysis_model,
-                messages=[
-                    {"role": "system", "content": t(self.language, "irvin_yalom_story_analysis")},
-                    {"role": "user", "content": prompt}
-                ],
+                messages=story_messages,
                 temperature=0.7,
-                max_tokens=3000,
-                stream=True
+                max_tokens=self.ANALYSIS_MAX_TOKENS,
             )
-            for chunk in response:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
             return
         except Exception as api_error:
             # Fallback to main model if analysis model fails
             print(f"[ANALYZE] Analysis model failed in analyze_story, trying main model: {api_error}")
         
         try:
-            response = self.client.chat.completions.create(
+            yield from self._complete_stream(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": t(self.language, "irvin_yalom_story_analysis")},
-                    {"role": "user", "content": prompt}
-                ],
+                messages=story_messages,
                 temperature=0.7,
-                max_tokens=3000,
-                stream=True
+                max_tokens=self.ANALYSIS_MAX_TOKENS,
             )
-            for chunk in response:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
         except Exception as e:
             print(f"[ANALYZE] Error in analyze_story_stream: {type(e).__name__}: {e}")
             yield f"Ошибка: {e}"
@@ -1000,7 +1182,8 @@ IMPORTANT: Write only clean text. No HTML tags, no <br> tags. Use only regular l
 
         """Сброс истории диалога."""
         self.history = []
-        print("�?стория диалога сброшена")
+        self.last_techniques = deque(maxlen=2)
+        print("История диалога сброшена")
 
 
 def main():
