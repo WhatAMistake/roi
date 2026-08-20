@@ -303,7 +303,7 @@ async def _do_generate(bot_instance, message: types.Message, pop_queue: bool = T
             else:
                 raise RuntimeError("No image data in response")
 
-            record_usage(user_id)
+            record_usage(user_id, admin_id=getattr(bot_instance, "admin_id", 0))
             log_run(
                 user_id=user_id,
                 description=ff.get("description", ""),

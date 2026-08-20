@@ -23,20 +23,30 @@ def _day_key() -> str:
     return now.strftime("%Y-%m-%d")
 
 
+def _is_admin(user_id: int, admin_id: int = 0) -> bool:
+    """True for the admin, who bypasses everything as before."""
+    return bool(admin_id) and user_id == admin_id
+
+
+def _ignores_limits(user_id: int, admin_id: int = 0) -> bool:
+    """True if the user bypasses daily limits (admin or explicitly allowed)."""
+    return _is_admin(user_id, admin_id) or user_id in FILM_FRAME_ALLOWED_USER_IDS
+
+
 def is_feature_available(user_id: int, admin_id: int = 0) -> tuple[bool, Optional[str]]:
     """Check if film-frame is available for this user.
 
     Returns (allowed, error_message).
-    Admin bypasses all limits.
+    Admin bypasses everything; explicitly allowed IDs bypass daily limits only.
     """
-    if admin_id and user_id == admin_id:
+    if _is_admin(user_id, admin_id):
         return (True, None)
 
     if not FILM_FRAME_ENABLED:
         return (False, "feature_disabled")
 
-    if FILM_FRAME_ALLOWED_USER_IDS and user_id not in FILM_FRAME_ALLOWED_USER_IDS:
-        return (False, "not_in_whitelist")
+    if _ignores_limits(user_id, admin_id):
+        return (True, None)
 
     # Check per-user daily limit
     today = _day_key()
@@ -59,8 +69,14 @@ def is_feature_available(user_id: int, admin_id: int = 0) -> tuple[bool, Optiona
     return (True, None)
 
 
-def record_usage(user_id: int) -> None:
-    """Increment per-user and global daily counters."""
+def record_usage(user_id: int, admin_id: int = 0) -> None:
+    """Increment per-user and global daily counters.
+
+    Unbounded users (admin / allowed IDs) are not counted against limits.
+    """
+    if _ignores_limits(user_id, admin_id):
+        return
+
     global _global_daily_count, _global_daily_reset
     today = _day_key()
     if _user_daily_reset.get(user_id, "") != today:

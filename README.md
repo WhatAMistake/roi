@@ -115,6 +115,8 @@ FILM_FRAME_PER_USER_DAILY_LIMIT=2
 FILM_FRAME_GLOBAL_DAILY_LIMIT=50
 ```
 
+`FILM_FRAME_ALLOWED_USER_IDS` — пользователи, которые игнорируют дневные лимиты. Все остальные ограничены лимитами `FILM_FRAME_PER_USER_DAILY_LIMIT` и `FILM_FRAME_GLOBAL_DAILY_LIMIT`.
+
 Подробности — в `.env.example`.
 
 ## Структура проекта

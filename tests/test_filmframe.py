@@ -66,14 +66,18 @@ class TestGate:
         assert not allowed
         assert reason == "feature_disabled"
 
-    def test_user_not_in_whitelist(self, mock_env_enabled):
+    def test_regular_user_allowed_under_limits(self, mock_env_enabled):
         from app.features.filmframe.gate import is_feature_available
         allowed, reason = is_feature_available(99999)
-        assert not allowed
-        assert reason == "not_in_whitelist"
+        assert allowed
+        assert reason is None
 
-    def test_user_in_whitelist(self, mock_env_enabled):
-        from app.features.filmframe.gate import is_feature_available
+    def test_unlimited_user_ignores_limits(self, mock_env_enabled):
+        from app.features.filmframe.gate import is_feature_available, record_usage
+        for _ in range(10):
+            allowed, _ = is_feature_available(12345)
+            assert allowed
+            record_usage(12345)
         allowed, reason = is_feature_available(12345)
         assert allowed
         assert reason is None
@@ -81,10 +85,10 @@ class TestGate:
     def test_per_user_limit(self, mock_env_enabled):
         from app.features.filmframe.gate import is_feature_available, record_usage
         for _ in range(3):
-            allowed, _ = is_feature_available(12345)
+            allowed, _ = is_feature_available(99999)
             assert allowed
-            record_usage(12345)
-        allowed, reason = is_feature_available(12345)
+            record_usage(99999)
+        allowed, reason = is_feature_available(99999)
         assert not allowed
         assert reason == "user_limit_reached"
 
@@ -92,9 +96,9 @@ class TestGate:
         monkeypatch.setenv("FILM_FRAME_GLOBAL_DAILY_LIMIT", "2")
         _reload_all()
         from app.features.filmframe.gate import is_feature_available, record_usage
-        record_usage(12345)
-        record_usage(67890)
-        allowed, reason = is_feature_available(12345)
+        record_usage(99999)
+        record_usage(88888)
+        allowed, reason = is_feature_available(99999)
         assert not allowed
         assert reason == "global_limit_reached"
 

@@ -8,7 +8,7 @@ load_dotenv()
 # Feature gate
 FILM_FRAME_ENABLED: bool = os.getenv("FILM_FRAME_ENABLED", "false").strip().lower() == "true"
 
-# Whitelist: comma-separated user IDs, empty = nobody
+# Unlimited IDs: comma-separated user IDs that ignore daily limits (empty = everyone uses limits)
 _raw_allowed = os.getenv("FILM_FRAME_ALLOWED_USER_IDS", "").strip()
 FILM_FRAME_ALLOWED_USER_IDS: set[int] = set()
 if _raw_allowed:
