@@ -145,6 +145,7 @@ except ImportError:
 from therapist_bot import ExistentialTherapistBot
 from lang_utils import detect_language
 from i18n import t
+from privacy import ConsentMiddleware, has_consent, show_consent
 from code_reviewer import check_and_generate_changelog, save_current_hashes
 import re
 
@@ -317,6 +318,7 @@ class TelegramTherapistBot:
         self.user_recent_messages: dict[int, list[dict]] = {}  # user_id -> list of {role, content, timestamp}
 
         # NOW load persisted preferences (after all dicts are initialized)
+        self.user_consents: dict[int, dict] = {}
         self._prefs_loaded = False
         self._load_user_prefs()
 
@@ -326,9 +328,18 @@ class TelegramTherapistBot:
         self.start_time = time.time()
         self.processed_flood_users = set()
 
+        middleware = ConsentMiddleware(self)
+        self.dp.message.outer_middleware(middleware)
+        self.dp.callback_query.outer_middleware(middleware)
         self._register_handlers()
 
     
+    def _has_consent(self, user_id: int) -> bool:
+        return has_consent(self, user_id)
+
+    async def _show_consent(self, message, lang):
+        await show_consent(self, message, lang)
+
     def _get_therapist(self, user_id: int) -> ExistentialTherapistBot:
         """Получить или создать сессию терапевта для пользователя."""
         if user_id not in self.sessions:
@@ -395,6 +406,7 @@ class TelegramTherapistBot:
                 print("[LOAD PREFS] Attempting to parse as unencrypted...")
             
             data = json.loads(decrypted_content)
+            self.user_consents = {int(k): v for k, v in data.get("user_consents", {}).items()}
 
             
             # Log what we found in the file
@@ -475,7 +487,7 @@ class TelegramTherapistBot:
         # Prevent saving if prefs weren't loaded successfully (avoids overwriting file with empty data)
         if not getattr(self, '_prefs_loaded', False):
             print("[SAVE PREFS] WARNING: Skipping save because prefs failed to load. Fix the load error to enable saving.")
-            return
+            return False
         
         # Optimization: Throttle saving to once every 60 seconds unless forced
         import time
@@ -495,6 +507,7 @@ class TelegramTherapistBot:
                 print("[SAVE PREFS] WARNING: Saving UNENCRYPTED data - set USER_PREFS_ENCRYPTION_KEY to enable encryption")
             
             payload = {
+                'user_consents': {str(k): v for k, v in self.user_consents.items()},
 
                 'user_langs': {str(k): v for k, v in self.user_langs.items()},
                 'user_ask_prob': {str(k): v for k, v in self.user_ask_prob.items()},
@@ -535,10 +548,12 @@ class TelegramTherapistBot:
             temp_path.replace(self.prefs_path)
             
             print(f"[SAVE PREFS] Saved successfully to {self.prefs_path}")
+            return True
         except Exception as e:
             print(f"[SAVE PREFS] Error saving prefs: {e}")
             import traceback
             traceback.print_exc()
+            return False
 
 
 
@@ -547,6 +562,11 @@ class TelegramTherapistBot:
     def _register_handlers(self):
         """Регистрация обработчиков."""
         
+        @self.dp.callback_query(F.data.startswith("consent:"))
+        async def consent_decision(callback: types.CallbackQuery):
+            # ConsentMiddleware handles the decision before routing.
+            pass
+
         @self.dp.message(Command("start"))
         async def cmd_start(message: types.Message):
             await self._handle_start(message)
@@ -1284,6 +1304,8 @@ class TelegramTherapistBot:
         
         # Рассылка всем пользователям
         for user_id in list(self.user_langs.keys()):
+            if not self._has_consent(user_id):
+                continue
             try:
                 await self.send_long_message(
                     user_id,
@@ -1485,6 +1507,8 @@ class TelegramTherapistBot:
 
         # Рассылка всем пользователям
         for user_id in list(self.user_langs.keys()):
+            if not self._has_consent(user_id):
+                continue
             try:
                 # Get user's preferred language
                 user_lang = self.user_langs.get(user_id, DEFAULT_LANG)
@@ -2047,7 +2071,7 @@ class TelegramTherapistBot:
 
     async def _check_and_send_daily_meaning(self, user_id: int, chat_id: int):
         """Check if it's time to send a daily meaning and send it."""
-        if not self.user_meaning_enabled.get(user_id, False):
+        if not self._has_consent(user_id) or not self.user_meaning_enabled.get(user_id, False):
             return
 
         from datetime import datetime, timedelta
@@ -2776,6 +2800,8 @@ class TelegramTherapistBot:
                 # Check every minute
                 await asyncio.sleep(60)
                 for user_id in list(self.user_langs.keys()):
+                    if not self._has_consent(user_id):
+                        continue
                     await self._check_and_send_daily_meaning(user_id, user_id)
             except Exception as e:
                 print(f"Error in _daily_meaning_loop: {e}")
