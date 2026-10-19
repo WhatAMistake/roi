@@ -8,6 +8,7 @@ import html
 import re
 import threading
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 from datetime import datetime
@@ -236,8 +237,8 @@ class TelegramTherapistBot:
     def __init__(
         self,
         telegram_token: str,
-        llm_model: str = "qwen3.8-flash",
-        llm_analysis_model: str = "qwen3.8-flash",
+        llm_model: str = "grok-4.3",
+        llm_analysis_model: str = "grok-4.3",
         llm_api_key: Optional[str] = None,
         llm_api_base: Optional[str] = None,
         use_rag: bool = True,
@@ -1892,11 +1893,12 @@ class TelegramTherapistBot:
             therapist = self._get_therapist(user_id)
             
             # Стриминг: отправляем пустое сообщение и редактируем его
-            sent = await message.answer("…")
+            sent = await message.answer("...")
             full_analysis = ""
             try:
-                chunk_source = self._stream_generic(therapist.analyze_associations_stream, associations)
-                full_analysis, shown = await self._smooth_stream_generic(chunk_source)
+                async with self._animate_loading_dots(sent):
+                    chunk_source = self._stream_generic(therapist.analyze_associations_stream, associations)
+                    full_analysis, shown = await self._smooth_stream_generic(chunk_source)
                 for part in shown:
                     if len(full_analysis) <= 4000:
                         try:
@@ -1956,11 +1958,12 @@ class TelegramTherapistBot:
         therapist = self._get_therapist(user_id)
         
         # Стриминг: отправляем пустое сообщение и редактируем его
-        sent = await message.answer("…")
+        sent = await message.answer("...")
         full_analysis = ""
         try:
-            chunk_source = self._stream_generic(therapist.analyze_story_stream, text)
-            full_analysis, shown = await self._smooth_stream_generic(chunk_source)
+            async with self._animate_loading_dots(sent):
+                chunk_source = self._stream_generic(therapist.analyze_story_stream, text)
+                full_analysis, shown = await self._smooth_stream_generic(chunk_source)
             for part in shown:
                 if len(full_analysis) <= 4000:
                     try:
@@ -2182,6 +2185,46 @@ class TelegramTherapistBot:
                 break
             elif kind == "done":
                 break
+
+    @asynccontextmanager
+    async def _animate_loading_dots(self, message, interval: float = 0.5):
+        """Анимирует индикатор ожидания (3 -> 2 -> 1 -> 2 -> 3 точки),
+        пока модель генерирует ответ.
+        """
+        stop_event = asyncio.Event()
+
+        async def _runner():
+            frames = ["..", ".", "..", "..."]
+            idx = 0
+            try:
+                while not stop_event.is_set():
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=interval)
+                        break
+                    except (asyncio.TimeoutError, TimeoutError):
+                        pass
+                    if stop_event.is_set():
+                        break
+                    frame = frames[idx % len(frames)]
+                    idx += 1
+                    try:
+                        await message.edit_text(frame)
+                    except Exception:
+                        pass
+            except asyncio.CancelledError:
+                pass
+
+        task = asyncio.create_task(_runner())
+        try:
+            yield
+        finally:
+            stop_event.set()
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
     async def _smooth_stream(self, therapist, user_input, words_per_tick: int = 3, tick: float = 0.12):
         """Сглаживает стриминг: накапливает чанки от API и отдаёт
@@ -2448,10 +2491,11 @@ class TelegramTherapistBot:
                 response = "Ошибка: исключение при вызове LLM"
         else:
             # Стриминг: отправляем пустое сообщение и редактируем его по мере поступления
-            sent = await message.answer("…")
+            sent = await message.answer("...")
             full_response = ""
             try:
-                full_response, shown = await self._smooth_stream(therapist, user_input)
+                async with self._animate_loading_dots(sent):
+                    full_response, shown = await self._smooth_stream(therapist, user_input)
                 # Каждый элемент shown — префикс полного текста до границы слов.
                 # edit_text заменяет весь текст, поэтому просто присваиваем part.
                 for part in shown:
@@ -2687,11 +2731,12 @@ class TelegramTherapistBot:
         therapist = self._get_therapist(user_id)
 
         # Стриминг: отправляем пустое сообщение и редактируем его
-        sent = await message.answer("…")
+        sent = await message.answer("...")
         full_response = ""
         try:
-            chunk_source = self._stream_generic(therapist.analyze_image_stream, image_url, caption)
-            full_response, shown = await self._smooth_stream_generic(chunk_source)
+            async with self._animate_loading_dots(sent):
+                chunk_source = self._stream_generic(therapist.analyze_image_stream, image_url, caption)
+                full_response, shown = await self._smooth_stream_generic(chunk_source)
             for part in shown:
                 if len(full_response) <= 4000:
                     try:
@@ -2813,8 +2858,8 @@ async def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Telegram бот-терапевт")
-    parser.add_argument("--model", default="qwen3.8-flash", help="Модель LLM для чата")
-    parser.add_argument("--analysis-model", default="qwen3.8-flash", help="Модель LLM для анализов")
+    parser.add_argument("--model", default="grok-4.3", help="Модель LLM для чата")
+    parser.add_argument("--analysis-model", default="grok-4.3", help="Модель LLM для анализов")
     parser.add_argument("--no-rag", action="store_true", help="Отключить RAG")
     args = parser.parse_args()
     
