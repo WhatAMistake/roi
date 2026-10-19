@@ -237,8 +237,8 @@ class TelegramTherapistBot:
     def __init__(
         self,
         telegram_token: str,
-        llm_model: str = "grok-4.3",
-        llm_analysis_model: str = "grok-4.3",
+        llm_model: str = "qwen3.8-flash",
+        llm_analysis_model: str = "qwen3.8-flash",
         llm_api_key: Optional[str] = None,
         llm_api_base: Optional[str] = None,
         use_rag: bool = True,
@@ -2187,7 +2187,7 @@ class TelegramTherapistBot:
                 break
 
     @asynccontextmanager
-    async def _animate_loading_dots(self, message, interval: float = 0.5):
+    async def _animate_loading_dots(self, message, interval: float = 0.37):
         """Анимирует индикатор ожидания (3 -> 2 -> 1 -> 2 -> 3 точки),
         пока модель генерирует ответ.
         """
@@ -2858,8 +2858,8 @@ async def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Telegram бот-терапевт")
-    parser.add_argument("--model", default="grok-4.3", help="Модель LLM для чата")
-    parser.add_argument("--analysis-model", default="grok-4.3", help="Модель LLM для анализов")
+    parser.add_argument("--model", default="qwen3.8-flash", help="Модель LLM для чата")
+    parser.add_argument("--analysis-model", default="qwen3.8-flash", help="Модель LLM для анализов")
     parser.add_argument("--no-rag", action="store_true", help="Отключить RAG")
     args = parser.parse_args()
     

@@ -52,6 +52,14 @@ async def test_animate_loading_dots_stops_cleanly_on_exit():
     assert len(edited_texts) == count_at_exit
 
 
+def test_animate_loading_dots_default_interval():
+    """Verify default interval is tuned to 0.37s."""
+    import inspect
+    sig = inspect.signature(TelegramTherapistBot._animate_loading_dots)
+    assert sig.parameters["interval"].default == 0.37
+
+
+
 @pytest.mark.asyncio
 async def test_animate_loading_dots_ignores_edit_errors():
     """Verify exceptions in edit_text (e.g. Telegram rate limit) do not crash the runner."""

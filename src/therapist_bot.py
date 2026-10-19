@@ -39,8 +39,8 @@ class ExistentialTherapistBot:
     
     def __init__(
         self,
-        model: str = os.getenv("OPENAI_MODEL", "grok-4.3"),  # основная модель для чата
-        analysis_model: str = os.getenv("OPENAI_ANALYSIS_MODEL", "grok-4.3"),  # модель для анализов
+        model: str = os.getenv("OPENAI_MODEL", "claude-sonnet-5-5"),  # основная модель для чата
+        analysis_model: str = os.getenv("OPENAI_ANALYSIS_MODEL", "claude-sonnet-5-5"),  # модель для анализов
         api_key: Optional[str] = None,
 
         api_base: Optional[str] = None,
@@ -1191,9 +1191,9 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Экзистенциальный терапевт-бот")
-    parser.add_argument("--model", default="grok-4.3", help="Модель LLM для чата")
+    parser.add_argument("--model", default="claude-sonnet-5-5", help="Модель LLM для чата")
 
-    parser.add_argument("--analysis-model", default="grok-4.3", help="Модель LLM для анализов")
+    parser.add_argument("--analysis-model", default="claude-sonnet-5-5", help="Модель LLM для анализов")
     parser.add_argument("--no-rag", action="store_true", help="Отключить RAG")
     args = parser.parse_args()
     
