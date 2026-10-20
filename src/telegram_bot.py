@@ -2773,6 +2773,8 @@ class TelegramTherapistBot:
     async def _check_and_notify_updates(self):
         """Check for code updates and notify all active users."""
         try:
+            # Short delay so polling is fully connected before checking updates
+            await asyncio.sleep(2.0)
             from pathlib import Path
             project_root = Path(__file__).parent.parent
             
@@ -2821,8 +2823,8 @@ class TelegramTherapistBot:
         except Exception as e:
             print(f"Could not get bot username: {e}")
         
-        # Check for updates on startup
-        await self._check_and_notify_updates()
+        # Check for updates in background so polling starts immediately
+        asyncio.create_task(self._check_and_notify_updates())
         
         # Start background tasks
         self.daily_meaning_task = asyncio.create_task(self._daily_meaning_loop())
