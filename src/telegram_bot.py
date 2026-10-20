@@ -237,8 +237,8 @@ class TelegramTherapistBot:
     def __init__(
         self,
         telegram_token: str,
-        llm_model: str = "qwen3.8-flash",
-        llm_analysis_model: str = "qwen3.8-flash",
+        llm_model: str = "deepseek-v4.1-flash",
+        llm_analysis_model: str = "deepseek-v4.1-flash",
         llm_api_key: Optional[str] = None,
         llm_api_base: Optional[str] = None,
         use_rag: bool = True,
