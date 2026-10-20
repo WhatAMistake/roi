@@ -39,8 +39,8 @@ class ExistentialTherapistBot:
     
     def __init__(
         self,
-        model: str = os.getenv("OPENAI_MODEL", "claude-sonnet-5-5"),  # основная модель для чата
-        analysis_model: str = os.getenv("OPENAI_ANALYSIS_MODEL", "claude-sonnet-5-5"),  # модель для анализов
+        model: str = os.getenv("OPENAI_MODEL", "deepseek-v4.1-flash"),  # основная модель для чата
+        analysis_model: str = os.getenv("OPENAI_ANALYSIS_MODEL", "deepseek-v4.1-flash"),  # модель для анализов
         api_key: Optional[str] = None,
 
         api_base: Optional[str] = None,
@@ -58,9 +58,9 @@ class ExistentialTherapistBot:
         # Probability to ask a clarifying/deep question in a response (0.0 - 1.0)
         # Can be overridden per-instance by passing `ask_question_prob`.
         try:
-            self.ask_question_prob = float(os.getenv("OPENAI_ASK_QUESTION_PROB", 0.2))
+            self.ask_question_prob = float(os.getenv("OPENAI_ASK_QUESTION_PROB", 0.27))
         except Exception:
-            self.ask_question_prob = 0.2
+            self.ask_question_prob = 0.27
 
         # Override by explicit parameter if provided
         if ask_question_prob is not None:
@@ -108,9 +108,9 @@ class ExistentialTherapistBot:
         """Дефолтный промпт если файл не найден."""
         return """Ты — эмпатичный экзистенциальный психотерапевт в традиции Ирвина Ялома. Твоё имя — Рой (или Рои).
     Помогай клиенту исследовать экзистенциальные данности: смерть, свободу, одиночество, бессмысленность.
-    Не давай советов, задавай открытые вопросы, используй феноменологическое слушание.
+    Не давай советов, не пересказывай слова собеседника, используй рефрейминг и феноменологическое слушание.
 
-    Важно: не задавай уточняющие вопросы автоматически в конце каждого ответа. Задавай вопрос только если он действительно помогает продвижению терапии (прояснить противоречие, открыть новый ракурс или прояснить ключевой момент). В остальных случаях делай отражение и краткое исследование без вопроса. Можно задавать глубокий вопрос в ~20–35% ответов, но только если он уместен и не звучит формально."""
+    Важно: не задавай уточняющие вопросы автоматически в конце каждого ответа. Задавай вопрос только если он действительно помогает продвижению терапии (прояснить противоречие, открыть новый ракурс или прояснить ключевой момент). В остальных случаях используй рефрейминг, наблюдение, гипотезу или технику без вопроса. Можно задавать глубокий вопрос в ~35–40% ответов, но только если он уместен и не звучит формально."""
     def _init_rag(self, data_dir: Optional[str]):
         """�?нициализация RAG."""
         try:
@@ -445,13 +445,21 @@ class ExistentialTherapistBot:
         messages: list[dict],
         temperature: float,
         max_tokens: int,
+        presence_penalty: Optional[float] = None,
         stream: bool = False,
     ):
+        if presence_penalty is None:
+            try:
+                presence_penalty = float(os.getenv("OPENAI_PRESENCE_PENALTY", 0.4))
+            except Exception:
+                presence_penalty = 0.4
+
         kwargs = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "presence_penalty": presence_penalty,
         }
         if stream:
             kwargs["stream"] = True
@@ -464,6 +472,7 @@ class ExistentialTherapistBot:
         messages: list[dict],
         temperature: float,
         max_tokens: int,
+        presence_penalty: Optional[float] = None,
     ) -> str:
         text = ""
         current_messages = messages
@@ -473,6 +482,7 @@ class ExistentialTherapistBot:
                 messages=current_messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                presence_penalty=presence_penalty,
             )
             choice = response.choices[0]
             piece = choice.message.content or ""
@@ -494,6 +504,7 @@ class ExistentialTherapistBot:
         messages: list[dict],
         temperature: float,
         max_tokens: int,
+        presence_penalty: Optional[float] = None,
     ) -> Generator[str, None, None]:
         assembled = ""
         current_messages = messages
@@ -503,6 +514,7 @@ class ExistentialTherapistBot:
                 messages=current_messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                presence_penalty=presence_penalty,
                 stream=True,
             )
             piece = ""
@@ -708,7 +720,7 @@ class ExistentialTherapistBot:
         
         try:
             response = self.client.chat.completions.create(
-                model=os.getenv("VISION_MODEL", "claude-sonnet-5"),  # Используем модель с поддержкой vision
+                model=os.getenv("VISION_MODEL", "deepseek-v4.1-flash"),  # Используем модель с поддержкой vision
                 messages=messages,
                 max_tokens=500,
                 stream=True
@@ -989,36 +1001,24 @@ IMPORTANT: Write only clean text. No HTML tags, no <br> tags. Use only regular l
             else:
                 context = context_ru
 
-        # Determine dominant given from RAG results, keyword detection, or LLM analysis
+        # Determine dominant given from Crowd Association RAG v2, keyword detection, or LLM analysis
         detected = None
+        secondary_detected = None
+        assoc_evidence = []
         try:
-            # Try to infer from RAG results - count givens from similar stories
-            if similar_stories:
-                givens_scores = {"freedom": 0, "nonsense": 0, "solitude": 0, "death": 0}
-                for story_result in similar_stories:
-                    metadata = story_result.metadata
-                    # Check if metadata has associations info
-                    if metadata:
-                        assoc_str = metadata.get("associations", "{}")
-                        try:
-                            import json
-                            assoc = json.loads(assoc_str) if isinstance(assoc_str, str) else assoc_str
-                            for given in ["freedom", "nonsense", "solitude", "death"]:
-                                if assoc.get(given):
-                                    givens_scores[given] += 1
-                        except Exception:
-                            pass
-                    # Also check source type as hint
-                    source_type = metadata.get("type", "") if metadata else ""
-                    if source_type:
-                        for given in ["freedom", "nonsense", "solitude", "death"]:
-                            if given in source_type.lower():
-                                givens_scores[given] += 0.5
-                
-                # Get dominant from RAG scores if we found anything
-                if any(givens_scores.values()):
-                    detected = max(givens_scores.items(), key=lambda x: x[1])[0]
-                    print(f"[ANALYZE] Dominant given from RAG: {detected}")
+            # Channel 1: Dedicated Crowd Association RAG v2 (semantic retrieval + hypothesis aggregation)
+            if self.rag and getattr(self.rag, "crowd_service", None):
+                try:
+                    assoc_hits = self.rag.search_similar_associations(story, n_results=15)
+                    if assoc_hits:
+                        hyp = self.rag.aggregate_given_evidence(assoc_hits)
+                        if hyp and hyp.primary:
+                            detected = hyp.primary
+                            secondary_detected = hyp.secondary
+                            assoc_evidence = hyp.evidence[:3]
+                            print(f"[ANALYZE] Detected given from Crowd Association RAG v2: {detected} (secondary={secondary_detected}, confidence={hyp.confidence})")
+                except Exception as crowd_err:
+                    print(f"[ANALYZE] Crowd association retrieval error: {crowd_err}")
             
             # Enhanced keyword detection with more comprehensive patterns
             if not detected:
@@ -1099,6 +1099,7 @@ Respond with ONLY the single word (death, freedom, solitude, or nonsense). No ex
                     print(f"[ANALYZE] LLM detection failed: {llm_err}")
             
             self.last_dominant_given = detected
+            self.last_secondary_given = secondary_detected
             if not detected:
                 print(f"[ANALYZE] WARNING: Could not detect dominant given")
         except Exception as e:
@@ -1191,9 +1192,9 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Экзистенциальный терапевт-бот")
-    parser.add_argument("--model", default="claude-sonnet-5-5", help="Модель LLM для чата")
+    parser.add_argument("--model", default="deepseek-v4.1-flash", help="Модель LLM для чата")
 
-    parser.add_argument("--analysis-model", default="claude-sonnet-5-5", help="Модель LLM для анализов")
+    parser.add_argument("--analysis-model", default="deepseek-v4.1-flash", help="Модель LLM для анализов")
     parser.add_argument("--no-rag", action="store_true", help="Отключить RAG")
     args = parser.parse_args()
     

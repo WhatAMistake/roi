@@ -61,7 +61,7 @@ LOCALES: Dict[str, Dict[str, str]] = {
         "lang_invalid": "Неверный код языка. Доступно: ru, en. Используйте /lang en или /lang ru"
         ,
         "response_instruction_ask": "Инструкция для этого ответа: Задайте ОДИН уточняющий или глубокий вопрос в конце вашего ответа, если это уместно и помогает терапии. Не задавайте несколько вопросов.",
-        "response_instruction_no_ask": "СТРОГАЯ ИНСТРУКЦИЯ: В этом ответе НЕЛЬЗЯ задавать вопрос. НИКАКИХ вопросов — ни в конце, ни в середине, ни в начале. Только отражение, наблюдение или техника. Запрещено спрашивать 'как вы чувствуете?', 'что вы думаете?', 'может быть...?' и любые другие вопросительные конструкции.",
+        "response_instruction_no_ask": "СТРОГАЯ ИНСТРУКЦИЯ: В этом ответе НЕЛЬЗЯ задавать вопрос. НИКАКИХ вопросов — ни в конце, ни в середине, ни в начале (ровно 0 знаков ?). Запрещено просто пересказывать или перефразировать слова собеседника ('ты говоришь/чувствуешь, что...'). Вместо повторения используй рефрейминг, подсвети скрытое противоречие, предложи гипотезу, наблюдение или технику. Запрещено спрашивать 'как вы чувствуете?', 'что вы думаете?', 'может быть...?' и любые другие вопросительные конструкции.",
         "reply_register_minimal": "Длина этого ответа: одна короткая живая фраза. Без техники, без упражнения, без вопроса.",
         "reply_register_short": "Длина этого ответа: 1–2 предложения. Не раздувай.",
         "reply_register_long": "Клиент рассказал развёрнуто — можно ответить несколькими абзацами, если это держит мысль. Не обрывай на полуслове и не раздувай водой.",
@@ -147,7 +147,7 @@ LOCALES: Dict[str, Dict[str, str]] = {
         "lang_invalid": "Invalid language code. Available: ru, en. Use /lang en or /lang ru"
         ,
         "response_instruction_ask": "Instruction for this response: Ask ONE clarifying or deep question at the end of your reply if it is relevant and helps the therapy. Do not ask multiple questions.",
-        "response_instruction_no_ask": "STRICT INSTRUCTION: In this response you must NOT ask ANY question. NO questions at all — not at the end, not in the middle, not at the beginning. Only reflection, observation, or technique. Forbidden to ask 'how do you feel?', 'what do you think?', 'perhaps...?' or any other question-like constructions.",
+        "response_instruction_no_ask": "STRICT INSTRUCTION: In this response you must NOT ask ANY question. NO questions at all — not at the end, not in the middle, not at the beginning (exactly 0 question marks). Do not merely restate, echo, or paraphrase the user's words ('you feel/say that...'). Instead, use reframing, highlight an underlying contradiction, offer a tentative hypothesis, observation, or technique. Forbidden to ask 'how do you feel?', 'what do you think?', 'perhaps...?' or any other question-like constructions.",
         "reply_register_minimal": "Length for this reply: one short living phrase. No technique, no exercise, no question.",
         "reply_register_short": "Length for this reply: 1–2 sentences. Do not pad.",
         "reply_register_long": "The client wrote at length — a few paragraphs are fine if they carry the thought. Do not cut off mid-sentence, and do not pad.",

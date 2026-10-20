@@ -53,6 +53,7 @@ class ExistentialRAG:
         # Qdrant client (инициализируем ДО вызова _init_embeddings)
         self.qdrant_client = None
         self.qdrant_collection = "existential_therapy"
+        self.crowd_service = None
         
         if EMBEDDINGS_AVAILABLE and use_local_embeddings:
             self._init_embeddings()
@@ -106,6 +107,19 @@ class ExistentialRAG:
             self._index_all_chunks()
         else:
             print(f"Коллекция {self.qdrant_collection} уже существует")
+
+        # Initialize Crowd Association RAG v2 service
+        try:
+            from src.crowd_association_service import CrowdAssociationService
+            self.crowd_service = CrowdAssociationService(
+                data_dir=self.data_dir,
+                qdrant_client=self.qdrant_client,
+                embedder=self.embedder,
+            )
+            print("[RAG] CrowdAssociationService v2 initialized")
+        except Exception as e:
+            print(f"[RAG] Warning: Could not initialize CrowdAssociationService: {e}")
+            self.crowd_service = None
 
     def _index_all_chunks(self):
         """Индексация всех чанков (датасет + книги) в Qdrant."""
@@ -180,6 +194,18 @@ class ExistentialRAG:
             )
         
         print("Индексация завершена")
+
+    def search_similar_associations(self, query: str, n_results: int = 30) -> list:
+        """Semantic search over existential_associations_v2 (v2 Crowd RAG)."""
+        if self.crowd_service:
+            return self.crowd_service.search_similar_associations(query, n_results=n_results)
+        return []
+
+    def aggregate_given_evidence(self, hits):
+        """Aggregate retrieved association hits into GivenHypothesis (v2 Crowd RAG)."""
+        if self.crowd_service:
+            return self.crowd_service.aggregate_given_evidence(hits)
+        return None
 
     def search_associations(self, word: str, givens: str = None) -> list[dict]:
         """Поиск записей по ассоциации."""

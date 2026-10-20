@@ -1,0 +1,32 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[EVAL] Initializing embedder (sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2)...
+
+Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]
+Loading weights: 100%|██████████| 199/199 [00:00<00:00, 4694.47it/s]
+[EVAL] Encoding 835 unique vocabulary terms...
+[EVAL] Running LORO across 106 respondents (2106 samples)...
+[EVAL] Evaluation completed in 6.58s
+===========================================================================
+               CROWD ASSOCIATION RAG: COMPREHENSIVE BENCHMARK
+===========================================================================
+Metric                         | Random     | Lexical Exact  | Semantic V2 
+---------------------------------------------------------------------------
+Coverage                       | 100.0%     |         73.4% |       70.6%
+Undetermined Rate              | 0.0%       | N/A            |       29.4%
+Accuracy (Non-Tie/Determined)  | 25.0%      |         71.4% |       59.0%
+Overall Sample Accuracy        | 25.0%      |         50.0% |       41.6%
+Macro F1 (Determined)          | 0.250      | N/A            |       0.536
+---------------------------------------------------------------------------
+Per-Given Accuracy:
+  freedom                      | 25.0%      |         87.7% |       89.1%
+  nonsense                     | 25.0%      |         67.3% |       57.1%
+  solitude                     | 25.0%      |         60.2% |       13.0%
+  death                        | 25.0%      |         70.1% |       67.9%
+---------------------------------------------------------------------------
+Semantic Confusion Matrix (Rows: True, Columns: Predicted):
+          freedom  nonsens  solitud    death
+freedom :     385       20        7       20
+nonsense:      87      188        3       51
+solitude:     156       71       45       73
+death   :      87       27        8      258
+===========================================================================
