@@ -2864,8 +2864,8 @@ async def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Telegram бот-терапевт")
-    parser.add_argument("--model", default="qwen3.8-flash", help="Модель LLM для чата")
-    parser.add_argument("--analysis-model", default="qwen3.8-flash", help="Модель LLM для анализов")
+    parser.add_argument("--model", default="deepseek-v4.1-flash", help="Модель LLM для чата")
+    parser.add_argument("--analysis-model", default="deepseek-v4.1-flash", help="Модель LLM для анализов")
     parser.add_argument("--no-rag", action="store_true", help="Отключить RAG")
     args = parser.parse_args()
     
