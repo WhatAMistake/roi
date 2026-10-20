@@ -531,8 +531,8 @@ def generate_changelog_with_llm(
             f"{item['diff']}"
         )
     diff_content = "\n\n".join(diff_sections)
-    if len(diff_content) > 4000:
-        diff_content = diff_content[:4000] + "\n... [diff truncated]"
+    if len(diff_content) > 2500:
+        diff_content = diff_content[:2500] + "\n... [diff truncated]"
     new_cmds = ", ".join(f"/{c}" for c in change_set.get("new_commands") or []) or "—"
     known_cmds = ", ".join(f"/{c}" for c in EXISTING_COMMANDS)
 
@@ -596,18 +596,22 @@ Return only the finished bullets or NONE. No reasoning."""
                     {"role": "user", "content": prompt},
                 ],
                 "temperature": 0.15,
-                "max_tokens": 350,
-                "timeout": 25.0,
+                "max_tokens": 220,
+                "timeout": 12.0,
             }
             try:
                 response = therapist_bot.client.chat.completions.create(
                     **create_kwargs,
                     extra_body={"thinking": {"type": "disabled"}},
                 )
-            except Exception:
-                response = therapist_bot.client.chat.completions.create(
-                    **create_kwargs,
-                )
+            except Exception as e:
+                # If error was not timeout (e.g. unknown parameter), retry plain
+                if "timeout" not in str(e).lower():
+                    response = therapist_bot.client.chat.completions.create(
+                        **create_kwargs,
+                    )
+                else:
+                    raise
             changelog = _sanitize_changelog(_extract_completion_text(response))
             if not changelog:
                 return ""

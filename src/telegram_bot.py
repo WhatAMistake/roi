@@ -2787,14 +2787,18 @@ class TelegramTherapistBot:
             therapist = self._get_therapist(self.admin_id)
             print(f"[UPDATE CHECK] Therapist initialized: {therapist is not None}")
             
-            # Generate changelogs for both languages (don't save hashes yet)
-            print(f"[UPDATE CHECK] Generating changelogs...")
-            changelog_ru = check_and_generate_changelog(project_root, therapist, self.admin_id, "ru", should_save_hashes=False)
-            changelog_en = check_and_generate_changelog(project_root, therapist, self.admin_id, "en", should_save_hashes=False)
+            # Generate changelogs for both languages in worker threads (non-blocking)
+            print(f"[UPDATE CHECK] Generating changelogs (in background thread)...")
+            changelog_ru = await asyncio.to_thread(
+                check_and_generate_changelog, project_root, therapist, self.admin_id, "ru", False
+            )
+            changelog_en = await asyncio.to_thread(
+                check_and_generate_changelog, project_root, therapist, self.admin_id, "en", False
+            )
 
             # Always refresh hash+snapshot baseline after a check.
             # Otherwise technical-only diffs re-fire on every restart.
-            save_current_hashes(project_root)
+            await asyncio.to_thread(save_current_hashes, project_root)
 
             print(f"[UPDATE CHECK] Changelog RU: {'YES (' + str(len(changelog_ru)) + ' chars)' if changelog_ru else 'NO'}")
             print(f"[UPDATE CHECK] Changelog EN: {'YES (' + str(len(changelog_en)) + ' chars)' if changelog_en else 'NO'}")
