@@ -23,77 +23,83 @@ except ImportError:
     CRYPTO_AVAILABLE = False
     print("cryptography не установлен. Установите: pip install cryptography")
 
+def _is_encryption_key_configured() -> bool:
+    """Return True if USER_PREFS_ENCRYPTION_KEY is present in environment."""
+    raw = os.getenv("USER_PREFS_ENCRYPTION_KEY")
+    if not raw:
+        return False
+    return bool(raw.strip().strip('"').strip("'").strip())
+
+
 def get_encryption_key() -> Optional[bytes]:
-    """Get encryption key from environment."""
+    """Get and validate Fernet encryption key from environment without logging key material."""
     key = os.getenv("USER_PREFS_ENCRYPTION_KEY")
     if not key:
         print("[ENCRYPTION] No USER_PREFS_ENCRYPTION_KEY found in environment")
         return None
-    
+
     # Strip whitespace and quotes (both single and double)
     key = key.strip().strip('"').strip("'").strip()
-    
-    print(f"[ENCRYPTION] Raw key from env (length: {len(key)} chars)")
-    print(f"[ENCRYPTION] Key starts with: {key[:10]}... ends with: ...{key[-10:]}")
-    
+    if not key:
+        print("[ENCRYPTION] Empty USER_PREFS_ENCRYPTION_KEY in environment")
+        return None
+
     try:
-        # Validate key format (Fernet keys are 32-byte base64-encoded, 44 chars with padding)
+        # Validate key format (Fernet keys are 32-byte urlsafe base64-encoded, 44 chars with padding)
         import base64
-        # Add padding if missing
         padding_needed = 4 - len(key) % 4
         if padding_needed != 4:
             key = key + '=' * padding_needed
-        
-        decoded = base64.urlsafe_b64decode(key)
+
+        decoded = base64.urlsafe_b64decode(key.encode('ascii'))
         if len(decoded) == 32:
-            print(f"[ENCRYPTION] Key validated successfully (32 bytes decoded)")
-            return key.encode('utf-8')
+            # Re-encode canonically so Fernet always receives a valid 44-byte urlsafe base64 key
+            canonical_key = base64.urlsafe_b64encode(decoded)
+            Fernet(canonical_key)
+            print("[ENCRYPTION] Key validated successfully")
+            return canonical_key
         else:
             print(f"[ENCRYPTION] Invalid key length: {len(decoded)} bytes (expected 32)")
             return None
     except Exception as e:
-        print(f"[ENCRYPTION] Invalid key format: {e}")
-        print(f"[ENCRYPTION] Key was: {key[:20]}...")
+        print(f"[ENCRYPTION] Invalid key format: {type(e).__name__}")
         return None
 
 
-
 def encrypt_data(data: str, key: Optional[bytes]) -> str:
-    """Encrypt data if key is available, otherwise return as-is."""
-    if not key or not CRYPTO_AVAILABLE:
-        if not CRYPTO_AVAILABLE:
-            print("[ENCRYPTION] cryptography not available")
-        elif not key:
-            print("[ENCRYPTION] No encryption key provided")
-        return data
+    """Encrypt data with Fernet. Raises on missing/invalid key or encryption failure."""
+    if not CRYPTO_AVAILABLE:
+        raise RuntimeError("cryptography package is not available; refusing to store unencrypted data")
+    if not key:
+        raise ValueError("Encryption key is missing or invalid; refusing to store unencrypted data")
     try:
         f = Fernet(key)
         encrypted = f.encrypt(data.encode('utf-8'))
-        result = encrypted.decode('utf-8')
-        print(f"[ENCRYPTION] Data encrypted successfully ({len(data)} -> {len(result)} chars)")
-        return result
+        return encrypted.decode('utf-8')
     except Exception as e:
-        print(f"[ENCRYPTION] Encryption failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return data
+        print(f"[ENCRYPTION] Encryption failed: {type(e).__name__}")
+        raise RuntimeError(f"Encryption failed: {type(e).__name__}") from e
 
 
 def decrypt_data(data: str, key: Optional[bytes]) -> str:
-    """Decrypt data if key is available, otherwise return as-is."""
-    if not key or not CRYPTO_AVAILABLE:
+    """Decrypt Fernet-encrypted data, or return legacy unencrypted JSON for migration."""
+    stripped = (data or "").strip()
+    if not stripped:
         return data
-    try:
-        f = Fernet(key)
-        # Check if data looks like Fernet token (starts with 'gAAAA')
-        if not data.strip().startswith('gAAAA'):
-            print("[ENCRYPTION] Data doesn't appear to be encrypted (not a Fernet token)")
-            return data
-        decrypted = f.decrypt(data.encode('utf-8'))
-        return decrypted.decode('utf-8')
-    except Exception as e:
-        print(f"[ENCRYPTION] Decryption failed: {e}")
-        return data
+    if stripped.startswith('gAAAA'):
+        if not CRYPTO_AVAILABLE:
+            raise RuntimeError("cryptography package is required to decrypt user preferences")
+        if not key:
+            raise ValueError("Encryption key is required to decrypt user preferences")
+        try:
+            f = Fernet(key)
+            decrypted = f.decrypt(stripped.encode('utf-8'))
+            return decrypted.decode('utf-8')
+        except Exception as e:
+            print(f"[ENCRYPTION] Decryption failed: {type(e).__name__}")
+            raise ValueError("Failed to decrypt user preferences") from e
+    # Legacy unencrypted JSON payload: allow reading for non-destructive migration
+    return data
 
 
 
@@ -143,12 +149,28 @@ except ImportError:
     KeyboardButton = _DummyKeyboardButton
     ReplyKeyboardBuilder = _DummyReplyKeyboardBuilder
 
-from therapist_bot import ExistentialTherapistBot
+from therapist_bot import ExistentialTherapistBot, Message
 from lang_utils import detect_language
 from i18n import t
 from privacy import ConsentMiddleware, has_consent, show_consent
 from code_reviewer import check_and_generate_changelog, save_current_hashes
-import re
+
+
+DEFAULT_LLM_MODEL = "deepseek-v4.1-flash"
+
+
+def _parse_admin_id(raw_value: Optional[str]) -> int:
+    """Safely parse ADMIN_ID from environment without raising ValueError on placeholders."""
+    if raw_value is None:
+        return 0
+    cleaned = str(raw_value).strip()
+    if not cleaned:
+        return 0
+    try:
+        return int(cleaned)
+    except ValueError:
+        print(f"[CONFIG] Invalid ADMIN_ID={cleaned!r}; admin commands disabled.")
+        return 0
 
 
 def strip_markdown(text: str) -> str:
@@ -237,8 +259,8 @@ class TelegramTherapistBot:
     def __init__(
         self,
         telegram_token: str,
-        llm_model: str = "deepseek-v4.1-flash",
-        llm_analysis_model: str = "deepseek-v4.1-flash",
+        llm_model: Optional[str] = None,
+        llm_analysis_model: Optional[str] = None,
         llm_api_key: Optional[str] = None,
         llm_api_base: Optional[str] = None,
         use_rag: bool = True,
@@ -249,8 +271,16 @@ class TelegramTherapistBot:
             raise RuntimeError("aiogram не установлен")
         
         self.telegram_token = telegram_token
-        self.llm_model = llm_model
-        self.llm_analysis_model = llm_analysis_model
+        self._explicit_llm_model = llm_model
+        self._explicit_llm_analysis_model = llm_analysis_model
+        self.llm_model = llm_model or os.getenv("OPENAI_MODEL") or DEFAULT_LLM_MODEL
+        self.llm_analysis_model = (
+            llm_analysis_model
+            or os.getenv("OPENAI_ANALYSIS_MODEL")
+            or self.llm_model
+        )
+        self._init_llm_model = self.llm_model
+        self._init_llm_analysis_model = self.llm_analysis_model
         
         # Инициализируем Telegram бота
         self.bot = Bot(token=telegram_token)
@@ -261,6 +291,8 @@ class TelegramTherapistBot:
 
         # Хранилище сессий (user_id -> therapist_bot)
         self.sessions: dict[int, ExistentialTherapistBot] = {}
+        self.user_locks: dict[int, asyncio.Lock] = {}
+        self.user_reset_epochs: dict[int, int] = {}
         
         # Состояния пользователей
         self.user_states: dict[int, str] = {}  # user_id -> state
@@ -274,14 +306,14 @@ class TelegramTherapistBot:
         self.llm_api_key = llm_api_key
         self.llm_api_base = llm_api_base
         self.use_rag = use_rag
-        # probability to ask a clarifying question per-response (defaults to env or 0.2)
+        # probability to ask a clarifying question per-response (defaults to env or 0.37)
         try:
             self.ask_question_prob = ask_question_prob if ask_question_prob is not None else float(os.getenv("OPENAI_ASK_QUESTION_PROB", 0.37))
         except Exception:
             self.ask_question_prob = 0.37
         
-        # ID администратора для фидбека
-        self.admin_id = int(os.getenv("ADMIN_ID", "282208693"))
+        # ID администратора для фидбека (безопасный парсинг без хардкода чужого ID и без падения на строке)
+        self.admin_id = _parse_admin_id(os.getenv("ADMIN_ID"))
 
         # Регистрируем хендлеры
         
@@ -367,7 +399,24 @@ class TelegramTherapistBot:
                     use_rag=self.use_rag,
                     language=lang,
                 )
+            self.sessions[user_id].history = [
+                Message(role=item["role"], content=item["content"])
+                for item in getattr(self, "user_recent_messages", {}).get(user_id, [])
+                if item.get("role") in ("user", "assistant") and isinstance(item.get("content"), str)
+            ]
         return self.sessions[user_id]
+
+    def _get_user_lock(self, user_id: int) -> asyncio.Lock:
+        if not hasattr(self, "user_locks"):
+            self.user_locks = {}
+        return self.user_locks.setdefault(user_id, asyncio.Lock())
+
+    async def _warn_prefs_not_saved(self, message, lang):
+        await message.answer(
+            "The change applies for now, but could not be saved and may be lost after restart."
+            if lang == "en" else
+            "Изменение действует сейчас, но его не удалось сохранить; после перезапуска оно может пропасть."
+        )
 
     def _load_user_prefs(self):
         """Load user preferences from file."""
@@ -379,7 +428,7 @@ class TelegramTherapistBot:
         if CRYPTO_AVAILABLE and encryption_key:
             print("[LOAD PREFS] Encryption: ENABLED (key is set)")
         elif CRYPTO_AVAILABLE and not encryption_key:
-            print("[LOAD PREFS] Encryption: DISABLED - set USER_PREFS_ENCRYPTION_KEY in .env to enable")
+            print("[LOAD PREFS] Encryption key unavailable; saving is disabled")
         else:
             print("[LOAD PREFS] Encryption: UNAVAILABLE - install cryptography package")
         
@@ -401,12 +450,8 @@ class TelegramTherapistBot:
             # Try to decrypt if encryption is available
             decrypted_content = decrypt_data(raw_content, encryption_key)
             
-            # Check if decryption failed
-            if encryption_key and CRYPTO_AVAILABLE and decrypted_content == raw_content:
-                print("[LOAD PREFS] WARNING: Decryption failed - possible key mismatch")
-                print("[LOAD PREFS] Attempting to parse as unencrypted...")
-            
             data = json.loads(decrypted_content)
+            self._loaded_prefs_data = data
             self.user_consents = {int(k): v for k, v in data.get("user_consents", {}).items()}
 
             
@@ -496,18 +541,14 @@ class TelegramTherapistBot:
         last_save = getattr(self, '_last_save_time', 0)
         if not force and (now - last_save < 60):
             return
-        self._last_save_time = now
         
         try:
             import json
 
             encryption_key = get_encryption_key()
             
-            # Warn if saving unencrypted
-            if not (CRYPTO_AVAILABLE and encryption_key):
-                print("[SAVE PREFS] WARNING: Saving UNENCRYPTED data - set USER_PREFS_ENCRYPTION_KEY to enable encryption")
-            
             payload = {
+                **getattr(self, "_loaded_prefs_data", {}),
                 'user_consents': {str(k): v for k, v in self.user_consents.items()},
 
                 'user_langs': {str(k): v for k, v in self.user_langs.items()},
@@ -541,12 +582,15 @@ class TelegramTherapistBot:
             encrypted_content = encrypt_data(json_content, encryption_key)
             
             # Write to a temporary file first to avoid corruption
+            self.prefs_path.parent.mkdir(parents=True, exist_ok=True)
             temp_path = self.prefs_path.with_suffix('.json.tmp')
             with open(temp_path, 'w', encoding='utf-8') as f:
                 f.write(encrypted_content)
             
             # Atomic rename
             temp_path.replace(self.prefs_path)
+            self._last_save_time = now
+            self._loaded_prefs_data = payload
             
             print(f"[SAVE PREFS] Saved successfully to {self.prefs_path}")
             return True
@@ -593,12 +637,13 @@ class TelegramTherapistBot:
                     if user_id in self.sessions:
                         sess = self.sessions[user_id]
                         sess.ask_question_prob = self.ask_question_prob
-                    self._save_user_prefs()
+                    if not self._save_user_prefs(force=True):
+                        await self._warn_prefs_not_saved(message, lang)
                 await message.answer(t(lang, "askprob_reset", prob=str(self.ask_question_prob)))
                 return
             try:
                 val = float(args)
-                if val < 0 or val > 1:
+                if not 0 <= val <= 1:
                     raise ValueError()
             except Exception:
                 await message.answer(t(lang, "askprob_invalid"))
@@ -608,7 +653,8 @@ class TelegramTherapistBot:
             if user_id in self.sessions:
                 sess = self.sessions[user_id]
                 sess.ask_question_prob = val
-            self._save_user_prefs()
+            if not self._save_user_prefs(force=True):
+                await self._warn_prefs_not_saved(message, lang)
             await message.answer(t(lang, "askprob_set", prob=str(val)))
 
         @self.dp.message(Command("lang"))
@@ -629,10 +675,8 @@ class TelegramTherapistBot:
                     sess.language = args
                     sess.system_prompt = sess._load_system_prompt()
                 # persist
-                try:
-                    self._save_user_prefs()
-                except Exception:
-                    pass
+                if not self._save_user_prefs(force=True):
+                    await self._warn_prefs_not_saved(message, args)
                 await message.answer(t(args, "lang_set", lang=args), reply_markup=get_main_keyboard(args))
                 return
             await message.answer(t(current, "lang_invalid"))
@@ -649,10 +693,8 @@ class TelegramTherapistBot:
                 sess = self.sessions[user_id]
                 sess.language = new_lang
                 sess.system_prompt = sess._load_system_prompt()
-            try:
-                self._save_user_prefs()
-            except Exception:
-                pass
+            if not self._save_user_prefs(force=True):
+                await self._warn_prefs_not_saved(message, new_lang)
             await message.answer(t(new_lang, "lang_set", lang=new_lang), reply_markup=get_main_keyboard(new_lang))
         
         @self.dp.message(Command("feedback"))
@@ -730,7 +772,8 @@ class TelegramTherapistBot:
             print(f"[SAVEALL] Encryption key: {'FOUND' if key else 'NOT FOUND'}")
             
             try:
-                self._save_user_prefs()
+                if not self._save_user_prefs(force=True):
+                    raise RuntimeError("User preferences could not be saved")
                 count = len(self.user_langs)
                 
                 # Check if file was actually encrypted
@@ -771,7 +814,7 @@ class TelegramTherapistBot:
                     print(f"[RECOVER] Failed for user {uid}: {e}")
             
             # Save only usernames - don't touch timestamps
-            self._save_user_prefs()
+            saved = self._save_user_prefs(force=True)
             
             # Report results
             total = len(self.user_langs)
@@ -783,11 +826,9 @@ class TelegramTherapistBot:
                 f"⚠️ Timestamps NOT overwritten."
             )
             await message.answer(result_msg)
+            if not saved:
+                await message.answer("❌ Username changes could not be saved.")
             print(f"[ADMIN] Recovered {recovered_count}/{total} usernames, failed: {failed_count}")
-
-        @self.dp.message(Command("look"))
-        async def cmd_look(message: types.Message):
-            await self._handle_look(message)
 
         @self.dp.message(Command("admin"))
         async def cmd_admin(message: types.Message):
@@ -809,8 +850,8 @@ class TelegramTherapistBot:
         async def btn_assoc_en(message: types.Message):
             await self._handle_assoc_start(message)
         
-        @self.dp.message(Command("analyze"))
-        async def cmd_analyze(message: types.Message):
+        @self.dp.message(Command("lysis"))
+        async def cmd_lysis(message: types.Message):
             await self._handle_analyze_start(message)
         
         @self.dp.message(F.text == "Анализ истории")
@@ -874,7 +915,7 @@ class TelegramTherapistBot:
             
             Стиль: Ирвин Ялом. Тихий, принимающий, без пафоса."""
             
-            response = therapist.generate_response(prompt, temporary_system_instruction=prompt, use_analysis_model=True)
+            response = await asyncio.to_thread(therapist.generate_response, prompt, temporary_system_instruction=prompt, use_analysis_model=True)
             await message.answer(response)
 
         @self.dp.message(Command("shoot"))
@@ -883,24 +924,7 @@ class TelegramTherapistBot:
 
         @self.dp.message(Command("remarque"))
         async def cmd_remarque(message: types.Message):
-            user_id = message.from_user.id
-            lang = self.user_langs.get(user_id, DEFAULT_LANG)
-            
-            # Проверяем, есть ли история
-            if user_id not in self.sessions or not self.sessions[user_id].history:
-                await message.answer(t(lang, "story_too_short"))
-                return
-                
-            await message.answer(t(lang, "meta_analyzing"), parse_mode="HTML")
-            
-            therapist = self._get_therapist(user_id)
-            # Генерируем метафору через специальный запрос к LLM
-            meta_prompt = t(lang, "meta_prompt")
-            
-            # Временно добавляем системную инструкцию для генерации метафоры
-            response = therapist.generate_response(meta_prompt, temporary_system_instruction=meta_prompt, use_analysis_model=True)
-            
-            await message.answer(f"<b>{('Наблюдение' if lang == 'ru' else 'Remarque')}:</b>\n\n{html.escape(response)}", parse_mode="HTML")
+            await self._handle_remarque(message)
 
         @self.dp.message(Command("silence"))
         async def cmd_silence(message: types.Message):
@@ -962,7 +986,7 @@ class TelegramTherapistBot:
         # Track username for admin lookup (fix for stats not showing username)
         if message.from_user.username:
             self.user_usernames[user_id] = message.from_user.username
-            self._save_user_prefs()
+            self._save_user_prefs(force=True)
 
 
         # Устанавливаем язык пользователя по его Telegram locale (если доступен)        # Но не переопределяем уже установленный пользователем язык.
@@ -987,7 +1011,7 @@ class TelegramTherapistBot:
 
         # persist preference
         try:
-            self._save_user_prefs()
+            self._save_user_prefs(force=True)
         except Exception:
             pass
 
@@ -1119,134 +1143,6 @@ class TelegramTherapistBot:
                     export_path.unlink()
             except Exception:
                 pass
-    async def _handle_look(self, message: types.Message):
-        """Обработка /look <user_id> (только для админа)."""
-        admin_id = message.from_user.id
-
-        if admin_id != self.admin_id:
-            return  # Молча игнорируем не-админа
-
-        # Парсим аргументы
-        parts = (message.text or "").split(None, 1)
-        if len(parts) < 2:
-            await message.answer("Использование: /look <user_id>")
-            return
-
-        try:
-            target_user_id = int(parts[1].strip())
-        except ValueError:
-            await message.answer("user_id должен быть числом")
-            return
-
-        # Ищем пользователя в сохранённых данных (не только в активных сессиях)
-        if target_user_id not in self.user_langs:
-            await message.answer(f"Пользователь {target_user_id} не найден")
-            return
-
-        # Данные запрошенного пользователя
-        target_lang = self.user_langs.get(target_user_id, DEFAULT_LANG)
-        target_username = self.user_usernames.get(target_user_id, "—")
-        target_recent_messages = self.user_recent_messages.get(target_user_id, [])
-
-        # Для доминирующей данности смотрим активную сессию, если есть
-        history_count = len(target_recent_messages)
-        dominant = "нет данных"
-        if target_user_id in self.sessions:
-            therapist_session = self.sessions[target_user_id]
-            if getattr(therapist_session, "last_dominant_given", None):
-                dominant = therapist_session.last_dominant_given
-
-        # Генерируем свежее ревью на основе сохранённых сообщений (даже без активной сессии)
-        fresh_summary = None
-        if len(target_recent_messages) >= 2:
-            therapist = self._get_therapist(target_user_id)
-            fresh_summary = await self._generate_user_summary(target_user_id, therapist)
-            if not fresh_summary.startswith("Ошибка генерации:"):
-                self.user_summaries[target_user_id] = fresh_summary
-                self._save_user_prefs(force=True)
-
-        # Получаем резюме (свежее или из файла)
-        saved_summary = fresh_summary or self.user_summaries.get(target_user_id, "Резюме ещё не сгенерировано")
-        msg_count = self.user_message_counts.get(target_user_id, 0)
-        to_next_summary = max(0, 16 - msg_count)
-
-        # Экранируем поля для безопасного HTML
-        safe_username = html.escape(target_username)
-        safe_dominant = html.escape(dominant)
-        safe_summary = html.escape(saved_summary)
-
-        summary_lines = [
-            f"<b>Резюме пользователя {target_user_id}</b>",
-            "",
-            f"Username: @{safe_username if safe_username != '—' else '—'}",
-            f"Язык: {target_lang}",
-            f"Сообщений в памяти (посл.16): {history_count}",
-            f"До следующего авто-резюме: {to_next_summary} сообщений",
-            f"Доминирующая данность: {safe_dominant}",
-            "",
-            "<b>Ревью:</b>",
-            f"{safe_summary[:1500]}{'...' if len(safe_summary) > 1500 else ''}",
-        ]
-
-        await message.answer("\n".join(summary_lines), parse_mode="HTML")
-
-        # TXT dump of recent messages (if any)
-        if not target_recent_messages:
-            await message.answer("Нет сохранённых сообщений для этого пользователя.")
-            return
-
-        now = datetime.now()
-        username_str = f"@{target_username}" if target_username and target_username != "—" else "—"
-        txt_lines = [
-            "USER RECENT MESSAGES EXPORT",
-            f"generated_at={now.isoformat()}",
-            f"user_id={target_user_id}",
-            f"username={username_str}",
-            f"lang={target_lang}",
-            f"messages_count={history_count}",
-            f"dominant_given={dominant}",
-            "",
-            "--- MESSAGES (oldest -> newest) ---",
-            "",
-        ]
-
-        for i, msg in enumerate(target_recent_messages[-16:], start=1):
-            role = msg.get("role", "unknown")
-            content = (msg.get("content") or "").replace("\r\n", "\n")
-            ts = msg.get("timestamp", "—")
-            role_label = "USER" if role == "user" else ("ASSISTANT" if role == "assistant" else role.upper())
-            txt_lines.append(f"[{i}] {ts} | {role_label}")
-            txt_lines.append(content)
-            txt_lines.append("")
-
-        if saved_summary and not str(saved_summary).startswith("Ошибка генерации:"):
-            txt_lines.extend([
-                "--- REVIEW ---",
-                "",
-                str(saved_summary),
-                "",
-            ])
-
-        export_dir = Path(__file__).parent.parent / "data"
-        export_dir.mkdir(exist_ok=True)
-        export_path = export_dir / f"look_{target_user_id}_{now.strftime('%Y%m%d_%H%M%S')}.txt"
-
-        try:
-            export_path.write_text("\n".join(txt_lines), encoding="utf-8")
-            await message.answer_document(
-                types.FSInputFile(str(export_path)),
-                caption=f"📄 Последние {history_count} сообщений пользователя {target_user_id}",
-            )
-        except Exception as e:
-            await message.answer(f"Не удалось отправить TXT с сообщениями: {e}")
-        finally:
-            try:
-                if export_path.exists():
-                    export_path.unlink()
-            except Exception:
-                pass
-
-
     async def _handle_admin(self, message: types.Message):
         """Обработка /admin <сообщение> — массовая рассылка от админа."""
         admin_id = message.from_user.id
@@ -1569,20 +1465,22 @@ class TelegramTherapistBot:
         )
     async def _handle_reset(self, message: types.Message):
         user_id = message.from_user.id
-        
-        if user_id in self.sessions:
-            self.sessions[user_id].reset()
-        
-        # Clear message counter, recent messages, and summary for this user
-        self.user_message_counts[user_id] = 0
-        self.user_recent_messages[user_id] = []
-        self.user_summaries[user_id] = ""
-        
-        self.user_states[user_id] = "chat"
+        async with self._get_user_lock(user_id):
+            if user_id in self.sessions:
+                self.sessions[user_id].reset()
+            self.user_message_counts[user_id] = 0
+            self.user_recent_messages[user_id] = []
+            self.user_summaries[user_id] = ""
+            self.user_states[user_id] = "chat"
+            saved = self._save_user_prefs(force=True)
         lang = self.user_langs.get(user_id, DEFAULT_LANG)
 
         await message.answer(
-            t(lang, "reset_confirm"),
+            t(lang, "reset_confirm") if saved else (
+                "History was cleared for this session, but could not be saved; it may return after restart."
+                if lang == "en" else
+                "История очищена в текущей сессии, но не сохранена и может вернуться после перезапуска."
+            ),
             reply_markup=get_main_keyboard(lang)
         )
 
@@ -1594,20 +1492,27 @@ class TelegramTherapistBot:
         await start_filmframe(self, message)
 
     async def _handle_remarque(self, message: types.Message):
-        """Old /meta behavior: existential metaphor."""
+        """Offer an observation grounded in recent dialogue without changing it."""
         user_id = message.from_user.id
         lang = self.user_langs.get(user_id, DEFAULT_LANG)
-
-        if user_id not in self.sessions or not self.sessions[user_id].history:
-            await message.answer(t(lang, 'story_too_short'))
-            return
-
-        await message.answer(t(lang, 'meta_analyzing'), parse_mode='HTML')
-        therapist = self._get_therapist(user_id)
-        meta_prompt = t(lang, 'meta_prompt')
-        response = therapist.generate_response(meta_prompt, temporary_system_instruction=meta_prompt, use_analysis_model=True)
-        meta_label = 'Метафора' if lang == 'ru' else 'Metaphor'
-        await message.answer(f'✨ <b>{meta_label}:</b>\n\n{html.escape(response)}', parse_mode='HTML')
+        async with self._get_user_lock(user_id):
+            therapist = self._get_therapist(user_id)
+            if not therapist.history:
+                await message.answer(t(lang, 'story_too_short'))
+                return
+            context = "\n".join(f"{item.role}: {item.content}" for item in therapist.history[-10:])
+            await message.answer(t(lang, 'meta_analyzing'), parse_mode='HTML')
+            try:
+                response = await asyncio.to_thread(
+                    therapist.generate_response, f"{t(lang, 'meta_prompt')}\n\n{context}",
+                    temporary_system_instruction=therapist.system_prompt, use_analysis_model=True,
+                )
+                if not response or response.startswith("Ошибка"):
+                    raise ValueError("Empty or failed response")
+                label = 'Наблюдение' if lang == 'ru' else 'Remarque'
+                await message.answer(f'<b>{label}:</b>\n\n{html.escape(response)}', parse_mode='HTML')
+            except Exception:
+                await message.answer(t(lang, "error_llm"))
 
     async def _handle_ff_describe(self, message: types.Message, text: str):
         """Filmframe: user describes state -> build scene."""
@@ -1727,7 +1632,7 @@ class TelegramTherapistBot:
                         sess = self.sessions[user_id]
                         sess.language = self.user_langs[user_id]
                         sess.system_prompt = sess._load_system_prompt()
-                    self._save_user_prefs()
+                    self._save_user_prefs(force=True)
             except Exception:
                 pass
         
@@ -1801,7 +1706,7 @@ class TelegramTherapistBot:
             self.user_first_seen[user_id] = now_dt
         self.user_last_active[user_id] = now_dt        
         # Сохраняем при каждом сообщении для актуальности таймстемпов
-        self._save_user_prefs()
+        self._save_user_prefs(force=True)
         # Проверка на активную минуту тишины
         if user_id in self.silence_until:
             remaining = int(self.silence_until[user_id] - now)
@@ -1892,56 +1797,24 @@ class TelegramTherapistBot:
             # Получаем анализ
             therapist = self._get_therapist(user_id)
             
-            # Стриминг: отправляем пустое сообщение и редактируем его
             sent = await message.answer("...")
-            full_analysis = ""
             try:
                 async with self._animate_loading_dots(sent):
-                    chunk_source = self._stream_generic(therapist.analyze_associations_stream, associations)
-                    full_analysis, shown = await self._smooth_stream_generic(chunk_source)
-                for part in shown:
-                    if len(full_analysis) <= 4000:
-                        try:
-                            await sent.edit_text(part)
-                        except Exception:
-                            pass
-                        await asyncio.sleep(0.12)
-            except Exception as e:
-                await sent.edit_text(t(lang, "error_llm"))
-                return
+                    source = self._stream_generic(therapist.analyze_associations_stream, associations)
+                    analysis, shown = await self._smooth_stream_generic(source)
+                if not analysis.strip():
+                    raise ValueError("Empty analysis")
+                title = 'Интерпретация' if lang == 'ru' else 'Interpretation'
+                prefix = f"{title}:\n\n"
+                await self._deliver_response(message, sent, prefix + strip_markdown(analysis),
+                                             [prefix + strip_markdown(part) for part in shown])
+                self.user_states[user_id] = "chat"
+                del self.temp_associations[user_id]
+            except Exception:
+                await self._show_delivery_error(message, sent, t(lang, "error_llm"))
             finally:
-                # Remove from queue
                 if user_id in self.message_queue and self.message_queue[user_id]:
                     self.message_queue[user_id].pop(0)
-
-            self.user_states[user_id] = "chat"
-            del self.temp_associations[user_id]
-
-            # Очищаем и форматируем финальный ответ
-            clean_analysis = strip_markdown(full_analysis)
-            escaped_analysis = html.escape(clean_analysis)
-            
-            final_text = f"<b>{('Интерпретация' if lang=='ru' else 'Interpretation')}:</b>\n\n{escaped_analysis}"
-            max_length = 4000
-            if len(final_text) > max_length:
-                # Если длинное — удаляем стрим-сообщение и отправляем частями
-                try:
-                    await sent.delete()
-                except Exception:
-                    pass
-                parts = self._split_text(final_text, max_length)
-                for i, part in enumerate(parts):
-                    kwargs = {"parse_mode": "HTML"}
-                    if i == len(parts) - 1:
-                        kwargs["reply_markup"] = get_main_keyboard(lang)
-                    await message.answer(part, **kwargs)
-            else:
-                # ReplyKeyboardMarkup cannot be attached via editMessageText.
-                # Stream already showed the text; don't send a second copy if edit fails.
-                try:
-                    await sent.edit_text(final_text, parse_mode="HTML")
-                except Exception:
-                    pass
 
     async def _handle_story_input(self, message: types.Message, text: str):        
         """Обработка ввода истории."""
@@ -1957,60 +1830,23 @@ class TelegramTherapistBot:
             return        
         therapist = self._get_therapist(user_id)
         
-        # Стриминг: отправляем пустое сообщение и редактируем его
         sent = await message.answer("...")
-        full_analysis = ""
         try:
             async with self._animate_loading_dots(sent):
-                chunk_source = self._stream_generic(therapist.analyze_story_stream, text)
-                full_analysis, shown = await self._smooth_stream_generic(chunk_source)
-            for part in shown:
-                if len(full_analysis) <= 4000:
-                    try:
-                        await sent.edit_text(part)
-                    except Exception:
-                        pass
-                    await asyncio.sleep(0.12)
-        except Exception as e:
-            await sent.edit_text(t(lang, "error_llm"))
-            return
+                source = self._stream_generic(therapist.analyze_story_stream, text)
+                analysis, shown = await self._smooth_stream_generic(source)
+            if not analysis.strip():
+                raise ValueError("Empty analysis")
+            title = 'Экзистенциальный отклик' if lang == 'ru' else 'Existential response'
+            prefix = f"{title}:\n\n"
+            await self._deliver_response(message, sent, prefix + strip_markdown(analysis),
+                                         [prefix + strip_markdown(part) for part in shown])
+            self.user_states[user_id] = "chat"
+        except Exception:
+            await self._show_delivery_error(message, sent, t(lang, "error_llm"))
         finally:
-            # Remove from queue
             if user_id in self.message_queue and self.message_queue[user_id]:
                 self.message_queue[user_id].pop(0)
-        
-        self.user_states[user_id] = "chat"
-        
-        # Очищаем и форматируем финальный ответ
-        clean_analysis = strip_markdown(full_analysis)
-        
-        # Если после очистки текст пустой или содержит только технические фразы
-        if not clean_analysis.strip() or "Ответ должен быть" in clean_analysis:
-            print(f"[DEBUG] strip_markdown returned empty or technical text. Original: {full_analysis}")
-            clean_analysis = full_analysis
-        
-        escaped_analysis = html.escape(clean_analysis)
-        final_text = f"<b>{('Экзистенциальный отклик' if lang=='ru' else 'Existential response')}:</b>\n\n{escaped_analysis}"
-        max_length = 4000
-        if len(final_text) > max_length:
-            # Если длинное — удаляем стрим-сообщение и отправляем частями
-            try:
-                await sent.delete()
-            except Exception:
-                pass
-            parts = self._split_text(final_text, max_length)
-            for i, part in enumerate(parts):
-                kwargs = {"parse_mode": "HTML"}
-                if i == len(parts) - 1:
-                    kwargs["reply_markup"] = get_main_keyboard(lang)
-                await message.answer(part, **kwargs)
-        else:
-            # ReplyKeyboardMarkup cannot be attached via editMessageText.
-            # Stream already showed the text; don't send a second copy if edit fails.
-            try:
-                await sent.edit_text(final_text, parse_mode="HTML")
-            except Exception:
-                pass
 
     async def _handle_meaning(self, message: types.Message):
         user_id = message.from_user.id
@@ -2019,7 +1855,7 @@ class TelegramTherapistBot:
         meaning_prompt = t(lang, "meaning_prompt")
         meaning_system = t(lang, "meaning_system")
         try:
-            response = therapist.generate_response(meaning_prompt, temporary_system_instruction=meaning_system, use_analysis_model=False)
+            response = await asyncio.to_thread(therapist.generate_response, meaning_prompt, temporary_system_instruction=meaning_system, use_analysis_model=False)
             await message.answer(f"🌱 {response}")        
         except Exception as e:
             print(f"[MEANING] Error: {e}")
@@ -2030,16 +1866,20 @@ class TelegramTherapistBot:
         self.user_meaning_enabled[user_id] = True
         from datetime import datetime
         self.user_meaning_last_time[user_id] = datetime.now()
-        self._save_user_prefs()
+        saved = self._save_user_prefs(force=True)
         lang = self.user_langs.get(user_id, DEFAULT_LANG)
         await message.answer(t(lang, "meaning_enabled"))
+        if not saved:
+            await self._warn_prefs_not_saved(message, lang)
 
     async def _handle_meaning_gone(self, message: types.Message):
         user_id = message.from_user.id
         self.user_meaning_enabled[user_id] = False
-        self._save_user_prefs()
+        saved = self._save_user_prefs(force=True)
         lang = self.user_langs.get(user_id, DEFAULT_LANG)
         await message.answer(t(lang, "meaning_disabled"))
+        if not saved:
+            await self._warn_prefs_not_saved(message, lang)
 
     async def _handle_meaning_where(self, message: types.Message):
         user_id = message.from_user.id
@@ -2088,11 +1928,11 @@ class TelegramTherapistBot:
             meaning_system = t(lang, "meaning_system")
             
             try:
-                response = therapist.generate_response(meaning_prompt, temporary_system_instruction=meaning_system, use_analysis_model=False)
+                response = await asyncio.to_thread(therapist.generate_response, meaning_prompt, temporary_system_instruction=meaning_system, use_analysis_model=False)
 
                 history = self.user_meaning_history.get(user_id, [])
                 if response in history:
-                    response = therapist.generate_response(meaning_prompt, temporary_system_instruction=meaning_system, use_analysis_model=False)
+                    response = await asyncio.to_thread(therapist.generate_response, meaning_prompt, temporary_system_instruction=meaning_system, use_analysis_model=False)
                 history.append(response)
                 if len(history) > 100:
                     history = [response]
@@ -2105,7 +1945,7 @@ class TelegramTherapistBot:
                 if self.user_meaning_count[user_id] >= 17:
                     self.user_meaning_enabled[user_id] = False
                     
-                self._save_user_prefs()
+                self._save_user_prefs(force=True)
                 await self.send_long_message(chat_id, f"🌱 {response}")
             except Exception as e:
                 print(f"[DAILY MEANING] Error for user {user_id}: {e}")            
@@ -2145,16 +1985,23 @@ class TelegramTherapistBot:
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
 
-        threading.Thread(target=_producer, daemon=True).start()
-
-        while True:
-            kind, payload = await queue.get()
-            if kind == "chunk":
-                yield payload
-            elif kind == "error":
-                raise RuntimeError(payload)
-            else:
-                break
+        producer = threading.Thread(target=_producer, daemon=True)
+        producer.start()
+        try:
+            while True:
+                kind, payload = await queue.get()
+                if kind == "chunk":
+                    if isinstance(payload, str) and re.match(r"^Ошибка(?::|\s)", payload):
+                        raise RuntimeError(payload)
+                    yield payload
+                elif kind == "error":
+                    raise RuntimeError(payload)
+                else:
+                    break
+        finally:
+            # The synchronous generator can still mutate history after cancellation.
+            # Keep the user's lock until the producer has actually stopped.
+            await asyncio.to_thread(producer.join)
 
     async def _stream_generic(self, sync_gen_func, *args):
         """Запускает синхронный генератор (sync_gen_func) в отдельном потоке
@@ -2179,10 +2026,11 @@ class TelegramTherapistBot:
         while True:
             kind, payload = await queue.get()
             if kind == "chunk":
+                if isinstance(payload, str) and re.match(r"^Ошибка(?::|\s)", payload):
+                    raise RuntimeError(payload)
                 yield payload
             elif kind == "error":
-                yield f"Ошибка: {payload}"
-                break
+                raise RuntimeError(payload)
             elif kind == "done":
                 break
 
@@ -2286,37 +2134,16 @@ class TelegramTherapistBot:
         вопросительный знак, многоточие, перенос строки). Если одно предложение
         длиннее max_len, оно режется по пробелам (по границам слов).
         """
-        if len(text) <= max_len:
-            return [text]
-
-        sentences = re.split(r'(?<=[.!?…])\s+|\n+', text)
+        if max_len <= 0:
+            raise ValueError("max_len must be positive")
         chunks = []
-        current = ""
-        for sent in sentences:
-            sent = sent.strip()
-            if not sent:
-                continue
-            if len(current) + len(sent) + 1 <= max_len:
-                current = (current + " " + sent).strip() if current else sent
-            else:
-                if current:
-                    chunks.append(current)
-                # Одно предложение длиннее лимита — режем по словам
-                if len(sent) > max_len:
-                    words = sent.split(" ")
-                    buf = ""
-                    for w in words:
-                        if len(buf) + len(w) + 1 > max_len:
-                            if buf:
-                                chunks.append(buf)
-                            buf = w
-                        else:
-                            buf = (buf + " " + w).strip() if buf else w
-                    current = buf
-                else:
-                    current = sent
-        if current:
-            chunks.append(current)
+        while len(text) > max_len:
+            boundary = max(text.rfind(" ", 0, max_len), text.rfind("\n", 0, max_len))
+            end = boundary + 1 if boundary > 0 else max_len
+            chunks.append(text[:end])
+            text = text[end:]
+        if text:
+            chunks.append(text)
         return chunks
 
     async def _generate_user_summary(self, user_id: int, therapist: ExistentialTherapistBot) -> str:
@@ -2362,14 +2189,14 @@ class TelegramTherapistBot:
 Без заголовков, списков и markdown. Только связный текст."""
         
         try:
-            # Используем gpt-5.4-mini для резюме
-            summary = therapist.generate_response(
+            summary = await asyncio.to_thread(
+                therapist.generate_response,
                 prompt,
                 temporary_system_instruction=(
                     "Ты — супервизор. Пиши предельно лаконично и конкретно. "
                     "Максимум 3 коротких предложения. Без шаблонов и markdown."
                 ),
-                model=os.getenv("SUMMARY_MODEL", "gpt-5.4-mini")
+                model=os.getenv("SUMMARY_MODEL") or self.llm_model
             )
             # Soft cap only as a safety net; laconic prompt should keep it short.
             return (summary or "").strip()[:2000]
@@ -2446,196 +2273,148 @@ class TelegramTherapistBot:
         except Exception as e:
             print(f"[VOID] Text spacer failed: {type(e).__name__}: {e}")
 
-    async def _handle_chat(self, message: types.Message, text: str, is_voice: bool = False):
-        """Обработка обычного чата."""
-        user_id = message.from_user.id
-        user_input = text
-        lang = self.user_langs.get(user_id, DEFAULT_LANG)
+    async def _show_delivery_error(self, message, sent, text):
+        try:
+            await sent.edit_text(text)
+        except Exception:
+            await message.answer(text)
 
-        # Never stream (or LLM-answer) slash-commands that slipped into chat.
-        raw = (text or "").strip()
-        if raw.startswith("/"):
-            cmd = raw[1:].split("@", 1)[0].split()[0].lower()
-            if cmd == "void":
-                if user_id in self.message_queue and self.message_queue[user_id]:
-                    self.message_queue[user_id].pop(0)
-                await self._handle_void(message)
-                return
-            if user_id in self.message_queue and self.message_queue[user_id]:
-                self.message_queue[user_id].pop(0)
-            return
-        
-        # Track username for admin lookup and persist immediately
-        if message.from_user.username:
-            self.user_usernames[user_id] = message.from_user.username
-            self._save_user_prefs()
-
-
-        
-        # Показываем, что печатаем
-        await self.bot.send_chat_action(
-            chat_id=message.chat.id,
-            action="typing"
-        )
-        
-        # Получаем ответ
-        therapist = self._get_therapist(user_id)
-
-        sent = None
-        if is_voice:
-            # Для голосовых сообщений нужен полный текст для генерации речи
+    async def _deliver_response(self, message, sent, text, shown=None):
+        """Return exactly the response text accepted by Telegram."""
+        lang = self.user_langs.get(message.from_user.id, DEFAULT_LANG)
+        last = ""
+        if sent is not None and len(text) <= 4000 and shown:
+            for part in shown:
+                if not part:
+                    continue
+                try:
+                    await sent.edit_text(part)
+                    last = part
+                except Exception:
+                    pass
+                await asyncio.sleep(0.12)
+        parts = self._split_text(text)
+        delivered = ""
+        for index, part in enumerate(parts):
             try:
-                loop = asyncio.get_event_loop()
-                response = await loop.run_in_executor(None, therapist.chat, user_input)
-            except Exception:
-                response = "Ошибка: исключение при вызове LLM"
-        else:
-            # Стриминг: отправляем пустое сообщение и редактируем его по мере поступления
-            sent = await message.answer("...")
-            full_response = ""
-            try:
-                async with self._animate_loading_dots(sent):
-                    full_response, shown = await self._smooth_stream(therapist, user_input)
-                # Каждый элемент shown — префикс полного текста до границы слов.
-                # edit_text заменяет весь текст, поэтому просто присваиваем part.
-                for part in shown:
-                    if len(full_response) <= 4000:
+                if index == 0 and sent is not None:
+                    if last != part:
                         try:
                             await sent.edit_text(part)
                         except Exception:
-                            pass
-                        await asyncio.sleep(0.12)
+                            await message.answer(part, reply_markup=get_main_keyboard(lang))
+                            try:
+                                await sent.delete()
+                            except Exception:
+                                print("[DELIVERY] Could not remove the streaming placeholder")
+                    delivered = part
+                else:
+                    kwargs = {"reply_markup": get_main_keyboard(lang)} if index == len(parts) - 1 else {}
+                    await message.answer(part, **kwargs)
+                    delivered += part
             except Exception:
-                pass
-            response = full_response
-        if not response or response.startswith("Ошибка:"):
+                partial = delivered or last
+                if partial:
+                    print("[DELIVERY] Telegram accepted only part of a response")
+                    try:
+                        await message.answer(
+                            "The rest of the response could not be delivered."
+                            if lang == "en" else
+                            "Не удалось доставить остальную часть ответа."
+                        )
+                    except Exception:
+                        pass
+                    return partial
+                raise
+        return delivered
+
+    async def _handle_chat(self, message: types.Message, text: str, is_voice: bool = False):
+        user_id = message.from_user.id
+        lang = self.user_langs.get(user_id, DEFAULT_LANG)
+        if (text or "").strip().startswith("/"):
             if user_id in self.message_queue and self.message_queue[user_id]:
                 self.message_queue[user_id].pop(0)
-            if sent is not None:
-                try:
-                    await sent.edit_text(t(lang, "error_llm"))
-                except Exception:
-                    await message.answer(t(lang, "error_llm"))
-            else:
-                await message.answer(t(lang, "error_llm"))
             return
+        async with self._get_user_lock(user_id):
+            therapist = self._get_therapist(user_id)
+            previous = list(therapist.history)
+            sent = None
+            delivered = ""
+            try:
+                await self.bot.send_chat_action(chat_id=message.chat.id, action="typing")
+                if is_voice:
+                    worker = asyncio.create_task(asyncio.to_thread(therapist.chat, text))
+                    try:
+                        response = await asyncio.shield(worker)
+                    except asyncio.CancelledError:
+                        await worker
+                        raise
+                    shown = None
+                else:
+                    sent = await message.answer("...")
+                    async with self._animate_loading_dots(sent):
+                        response, shown = await self._smooth_stream(therapist, text)
+                if not response or not response.strip() or re.match(r"^Ошибка(?::|\s)", response):
+                    raise ValueError("Empty or failed response")
+                delivered = await self._deliver_response(message, sent, response, shown)
+                if not delivered:
+                    raise ValueError("Response was not delivered")
+                therapist.history = previous + [Message(role="user", content=text), Message(role="assistant", content=delivered)]
+                timestamp = datetime.now().isoformat()
+                recent = self.user_recent_messages.setdefault(user_id, [])
+                recent.extend([{"role": "user", "content": text, "timestamp": timestamp},
+                               {"role": "assistant", "content": delivered, "timestamp": timestamp}])
+                self.user_recent_messages[user_id] = recent[-16:]
+                self.user_message_counts[user_id] = self.user_message_counts.get(user_id, 0) + 1
+                if message.from_user.username:
+                    self.user_usernames[user_id] = message.from_user.username
+                self.user_consecutive_messages[user_id] = 0
+                if not self._save_user_prefs(force=True):
+                    try:
+                        await message.answer(
+                            "This conversation could not be saved and may be lost after restart."
+                            if lang == "en" else
+                            "Не удалось сохранить разговор; после перезапуска он может пропасть."
+                        )
+                    except Exception:
+                        pass
+                if self.user_message_counts[user_id] >= 16:
+                    summary = await self._generate_user_summary(user_id, therapist)
+                    if not summary.startswith("Ошибка генерации:"):
+                        self.user_summaries[user_id] = summary
+                        self.user_message_counts[user_id] = 0
+                        self._save_user_prefs(force=True)
+                if is_voice and delivered == response:
+                    try:
+                        temp_dir = Path("temp_audio")
+                        temp_dir.mkdir(exist_ok=True)
+                        audio_path = temp_dir / f"response_{user_id}.mp3"
+                        result = await asyncio.to_thread(therapist.generate_speech, response, str(audio_path))
+                        if not result.startswith("Ошибка"):
+                            try:
+                                await message.answer_voice(types.FSInputFile(result))
+                            finally:
+                                Path(result).unlink(missing_ok=True)
+                    except Exception as exc:
+                        print(f"[VOICE] Delivery failed: {type(exc).__name__}")
+            except asyncio.CancelledError:
+                if not delivered:
+                    therapist.history = previous
+                raise
+            except Exception:
+                if not delivered:
+                    therapist.history = previous
+                    try:
+                        if sent is not None:
+                            await self._show_delivery_error(message, sent, t(lang, "error_llm"))
+                        else:
+                            await message.answer(t(lang, "error_llm"))
+                    except Exception:
+                        pass
+            finally:
+                if user_id in self.message_queue and self.message_queue[user_id]:
+                    self.message_queue[user_id].pop(0)
 
-        # Update message count and generate summary every 16 messages (internal only)
-        self.user_message_counts[user_id] = self.user_message_counts.get(user_id, 0) + 1
-
-        # Store recent message
-        if user_id not in self.user_recent_messages:
-            self.user_recent_messages[user_id] = []        
-        from datetime import datetime
-        self.user_recent_messages[user_id].append({
-            "role": "user",
-            "content": user_input[:4000],  # keep enough context for admin review
-            "timestamp": datetime.now().isoformat()
-        })
-        # Keep only last 16 messages
-        self.user_recent_messages[user_id] = self.user_recent_messages[user_id][-16:]
-        
-        # Track username for admin lookup and persist immediately
-        if message.from_user.username:
-            self.user_usernames[user_id] = message.from_user.username
-        
-        if self.user_message_counts[user_id] >= 16:
-            # Generate summary for internal admin use
-            summary = await self._generate_user_summary(user_id, therapist)
-            self.user_summaries[user_id] = summary
-            self.user_message_counts[user_id] = 0  # reset counter
-            self._save_user_prefs()
-            print(f"[ADMIN SUMMARY] User {user_id}: {summary[:100]}...")
-        else:
-            # Save prefs even if summary not generated to persist message count and username
-            self._save_user_prefs()
-
-        
-        # Если это голосовое сообщение, генерируем аудио
-        if is_voice:
-            await self.bot.send_chat_action(
-                chat_id=message.chat.id,
-                action="record_voice"
-            )
-            
-            # Создаем временный файл
-            temp_dir = Path("temp_audio")
-            temp_dir.mkdir(exist_ok=True)
-            audio_path = temp_dir / f"response_{user_id}.mp3"
-            
-            # Генерируем речь
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None, 
-                therapist.generate_speech, 
-                response, 
-                str(audio_path)
-            )
-            
-            if not result.startswith("Ошибка"):
-                # Отправляем голосовое
-                voice_file = types.FSInputFile(result)
-                await message.answer_voice(voice_file)
-                
-                # Удаляем файл
-                try:
-                    os.remove(result)
-                except:
-                    pass
-            else:
-                await message.answer(f"Не удалось сгенерировать голос: {result}")
-        
-        # Отправляем текстовый ответ (разбиваем на части если длинный)
-        max_length = 4000
-        try:
-            if is_voice:
-                # Голосовой путь: отправляем текст как раньше
-                parts = self._split_text(response, max_length)
-                for i, part in enumerate(parts):
-                    kwargs = {}
-                    if i == len(parts) - 1:
-                        kwargs["reply_markup"] = get_main_keyboard(lang)
-                    await message.answer(part, **kwargs)
-            elif len(response) > max_length:
-                # Стриминг: сообщение уже отредактировано, но ответ длиннее лимита.
-                # Удаляем стриминговое сообщение и отправляем частями по границам предложений.
-                try:
-                    await sent.delete()
-                except Exception:
-                    pass
-                parts = self._split_text(response, max_length)
-                for i, part in enumerate(parts):
-                    kwargs = {}
-                    if i == len(parts) - 1:
-                        kwargs["reply_markup"] = get_main_keyboard(lang)
-                    await message.answer(part, **kwargs)
-            else:
-                # Ответ уже показан через edit_text — обновим последнее сообщение с клавиатурой
-                try:
-                    await sent.edit_text(response, reply_markup=get_main_keyboard(lang))
-                except Exception:
-                    pass
-        finally:
-            # Remove message from queue after responding (or failing)
-            if user_id in self.message_queue and self.message_queue[user_id]:
-                self.message_queue[user_id].pop(0)
-        
-        # Store assistant response
-        if user_id not in self.user_recent_messages:
-            self.user_recent_messages[user_id] = []        
-        from datetime import datetime
-        self.user_recent_messages[user_id].append({
-            "role": "assistant",
-            "content": response[:4000],  # keep enough context for admin review
-            "timestamp": datetime.now().isoformat()
-        })
-        # Keep only last 16 messages
-        self.user_recent_messages[user_id] = self.user_recent_messages[user_id][-16:]
-        
-        # Reset consecutive message counter since bot just responded
-        self.user_consecutive_messages[user_id] = 0
-
-    
     async def _handle_voice(self, message: types.Message):
         """Обработка голосовых сообщений."""
         user_id = message.from_user.id
@@ -2682,7 +2461,7 @@ class TelegramTherapistBot:
                     sess.language = "ru"
                     sess.system_prompt = sess._load_system_prompt()
                 try:
-                    self._save_user_prefs()
+                    self._save_user_prefs(force=True)
                 except Exception:
                     pass
             else:
@@ -2693,7 +2472,7 @@ class TelegramTherapistBot:
                         sess.language = DEFAULT_LANG
                         sess.system_prompt = sess._load_system_prompt()
                     try:
-                        self._save_user_prefs()
+                        self._save_user_prefs(force=True)
                     except Exception:
                         pass
         except Exception:
@@ -2730,46 +2509,18 @@ class TelegramTherapistBot:
 
         therapist = self._get_therapist(user_id)
 
-        # Стриминг: отправляем пустое сообщение и редактируем его
         sent = await message.answer("...")
-        full_response = ""
         try:
             async with self._animate_loading_dots(sent):
-                chunk_source = self._stream_generic(therapist.analyze_image_stream, image_url, caption)
-                full_response, shown = await self._smooth_stream_generic(chunk_source)
-            for part in shown:
-                if len(full_response) <= 4000:
-                    try:
-                        await sent.edit_text(part)
-                    except Exception:
-                        pass
-                    await asyncio.sleep(0.12)
-        except Exception as e:
-            await sent.edit_text(t(lang, "image_analysis_failed", error=str(e)))
-            return
+                source = self._stream_generic(therapist.analyze_image_stream, image_url, caption)
+                response, shown = await self._smooth_stream_generic(source)
+            if not response.strip():
+                raise ValueError("Empty response")
+            await self._deliver_response(message, sent, strip_markdown(response),
+                                         [strip_markdown(part) for part in shown])
+        except Exception:
+            await self._show_delivery_error(message, sent, t(lang, "error_llm"))
 
-        # If analyze_image returned an error-like string
-        if not full_response or ("Ошибка" in full_response or full_response.strip().lower().startswith("error")):
-            await sent.edit_text(t(lang, "image_analysis_failed", error=full_response or "unknown"))
-            return
-
-        full_response = strip_markdown(full_response)
-        max_length = 4000
-        if len(full_response) > max_length:
-            try:
-                await sent.delete()
-            except Exception:
-                pass
-            parts = self._split_text(full_response, max_length)
-            for part in parts:
-                await message.answer(part)
-        else:
-            # Last stream edit already has the full text; a failed
-            # "message is not modified" must not send a second copy.
-            try:
-                await sent.edit_text(full_response)
-            except Exception:
-                pass
     async def _check_and_notify_updates(self):
         """Check for code updates and notify all active users."""
         try:
@@ -2864,8 +2615,8 @@ async def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Telegram бот-терапевт")
-    parser.add_argument("--model", default="deepseek-v4.1-flash", help="Модель LLM для чата")
-    parser.add_argument("--analysis-model", default="deepseek-v4.1-flash", help="Модель LLM для анализов")
+    parser.add_argument("--model", default=None, help="Модель LLM для чата")
+    parser.add_argument("--analysis-model", default=None, help="Модель LLM для анализов")
     parser.add_argument("--no-rag", action="store_true", help="Отключить RAG")
     args = parser.parse_args()
     

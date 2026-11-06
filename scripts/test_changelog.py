@@ -58,9 +58,9 @@ CHANGELOG_COMMENTS_EN = [
 
 
 EXISTING_COMMANDS = [
-    "start", "help", "lang", "switchlang", "reset", "assoc", "analyze",
+    "start", "help", "lang", "switchlang", "reset", "assoc", "lysis",
     "meta", "silence", "void", "meaning", "meaning_is", "meaning_gone",
-    "meaning_where", "look", "feedback", "stats", "askprob",
+    "meaning_where", "feedback", "stats", "askprob",
     "recover", "saveall", "dumpall"
 ]
 
@@ -270,9 +270,9 @@ def generate_changelog_with_llm(therapist_bot, changed_files, project_root, lang
 9. Если в коде нет явных изменений — напиши только: "Внутренние улучшения"
 
 
-Существующие команды: /start, /help, /lang, /switchlang, /reset, /assoc, /analyze, /meta, /silence, /void, /meaning, /meaning_is, /meaning_gone, /meaning_where, /look, /feedback, /stats, /askprob, /recover, /saveall, /dumpall
+Существующие команды: /start, /help, /lang, /switchlang, /reset, /assoc, /lysis, /meta, /silence, /void, /meaning, /meaning_is, /meaning_gone, /meaning_where, /feedback, /stats, /askprob, /recover, /saveall, /dumpall
 
-АДМИНСКИЕ (не упоминать): /look, /recover, /saveall, /dumpall, /admin
+АДМИНСКИЕ (не упоминать): /recover, /saveall, /dumpall, /admin
 
 Изменённые файлы:
 
@@ -299,9 +299,9 @@ RULES:
 9. If no clear changes in code — write only: "Internal improvements"
 
 
-Existing commands: /start, /help, /lang, /switchlang, /reset, /assoc, /analyze, /meta, /silence, /void, /meaning, /meaning_is, /meaning_gone, /meaning_where, /look, /feedback, /stats, /askprob, /recover, /saveall, /dumpall
+Existing commands: /start, /help, /lang, /switchlang, /reset, /assoc, /lysis, /meta, /silence, /void, /meaning, /meaning_is, /meaning_gone, /meaning_where, /feedback, /stats, /askprob, /recover, /saveall, /dumpall
 
-ADMIN (never mention): /look, /recover, /saveall, /dumpall, /admin
+ADMIN (never mention): /recover, /saveall, /dumpall, /admin
 
 Changed files:
 

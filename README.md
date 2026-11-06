@@ -9,7 +9,7 @@
 
 - Диалог в духе экзистенциальной терапии (текст, голос, фото)
 - RAG по книгам и датасету ассоциаций (Qdrant + sentence-transformers)
-- Анализ ассоциаций (`/assoc`) и разбор ситуации (`/analyze`)
+- Анализ ассоциаций (`/assoc`) и разбор ситуации (`/lysis`)
 - Русский и английский интерфейс
 - Экспериментальный снимок на плёнку (`/shoot`)
 - Админ-команды, отзывы и т.д.
@@ -48,28 +48,42 @@ cp .env.example .env
 ```env
 TELEGRAM_BOT_TOKEN=123456789:ABCdef...
 OPENAI_API_KEY=your-api-key
-OPENAI_API_BASE=https://api.openai.com/v1
+OPENAI_API_BASE=https://api.cometapi.com/v1
 ADMIN_ID=your-telegram-id
 ```
 
-Бот работает с любым OpenAI-совместимым API (OpenAI, Together, Groq, CometAPI и др.).
+Бот использует CometAPI через OpenAI-совместимый API. Для другого совместимого API проверьте поддержку выбранных моделей и параметров.
 Для провайдеров из РФ см. `docs/RUSSIAN_API.md`.
+
+Для терапевтических запросов укажите `OPENAI_MODEL`; `OPENAI_ANALYSIS_MODEL` необязателен и при отсутствии наследует основную модель. Явные `--model` и `--analysis-model` имеют приоритет. Параметр `OPENAI_ASK_QUESTION_PROB` и `/askprob` задают мягкую инициативность вопросов, а не измеренную частоту или запрет вопросов.
+
+CometAPI поддерживает OpenAI-совместимый [Chat Completions](https://apidoc.cometapi.com/api/text/chat), но набор параметров зависит от модели. Для чата отправляется `reasoning_effort=medium`, для анализа — `high`. Выбирайте в настройках модели, которые поддерживают оба нужных значения через используемый маршрут CometAPI; например, [документация DeepSeek V4 Pro](https://www.cometapi.com/how-to-use-deepseek-v4-pro-api) отмечает, что `medium` может отображаться как `high`. Для моделей без поддержки reasoning запрос завершится явной ошибкой; автоматического переключения модели или бесконечных повторов нет. Проверяйте поддержку для конкретной модели и тарифа при развёртывании.
+
+Чтобы не отправлять параметры, несовместимые с неизвестной моделью, запросы терапевта не задают `temperature`, штрафы и лимит токенов: действует лимит модели/API. Это может влиять на задержку и стоимость. Ответ с причиной завершения `length` продолжается ограниченное число раз; неполный или пустой ответ не сохраняется в историю как завершённый.
 
 ### 3. Данные (опционально, для RAG)
 
 ```bash
-# xlsx-датасет ассоциаций -> JSON
-python src/convert_dataset.py
+# XLSX -> dataset.json и три crowd-артефакта (для замены добавьте --force)
+python src/convert_dataset.py --input path/to/dataset.xlsx
 
 # PDF/TXT/DOCX из books/ -> чанки для RAG
 python src/index_books.py
+
+# Явное создание двух отдельных коллекций Qdrant
+python scripts/rebuild_association_index.py
+python scripts/rebuild_therapy_index.py
 ```
 
-Или одной командой:
-
-```bash
-python setup.py
-```
+Актуальные источники: `data/dataset.json`, `association_index.json`,
+`association_items.json`, `narrative_chunks.json` и `book_chunks.json`. Индекс
+ассоциаций имеет формат `термин → данность → ID респондентов`; нарративы не
+содержат ассоциаций. Коллекции `existential_associations` и
+`existential_therapy` хранятся в `data/qdrant_storage/`. Обычный запуск бота
+не переиндексирует их. Для намеренного пересоздания существующей коллекции
+индексаторы требуют `--force`; при этом старая коллекция будет удалена.
+`python setup.py` подготавливает файлы, но не создаёт векторные коллекции.
+Данные, книги и локальное хранилище исключены из Git.
 
 ### 4. Запуск
 
@@ -97,7 +111,7 @@ python run.py
 | `/help` | Справка |
 | `/reset` | Сбросить историю |
 | `/assoc` | Анализ ассоциаций (4 данности) |
-| `/analyze` | Глубокий разбор ситуации |
+| `/lysis` | Глубокий разбор ситуации |
 | `/shoot` | Снимок внутреннего состояния на плёнку |
 | `/switchlang` | Переключить язык (ru/en) |
 | `/lang ru` / `/lang en` | Выбрать язык явно |

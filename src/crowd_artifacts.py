@@ -1,10 +1,10 @@
 """
-Pipeline for generating Crowd Association RAG v2 artifacts from dataset_v2.json.
+Pipeline for generating Crowd Association RAG artifacts from dataset.json.
 
 Artifacts produced:
-- association_items_v2.json: Aggregated unique (given, term) entries with crowd statistics.
-- association_index_v2.json: Inverted lexical index mapping term -> givens -> respondent_ids.
-- narrative_chunks_v2.json: Pure narrative chunks without association payload.
+- association_items.json: Aggregated unique (given, term) entries with crowd statistics.
+- association_index.json: Inverted lexical index mapping term -> givens -> respondent_ids.
+- narrative_chunks.json: Pure narrative chunks without association payload.
 - build_metrics.json: Detailed dataset & vocabulary statistics.
 """
 
@@ -71,7 +71,7 @@ def build_artifacts(
                     term_given_respondents[norm][g].add(rid)
                     valid_sample_count += 1
 
-    # 2. Build association_items_v2.json
+    # 2. Build association_items.json
     # One item per unique (given, canonical_term)
     association_items: List[Dict[str, Any]] = []
     item_counter = 0
@@ -102,7 +102,7 @@ def build_artifacts(
             }
             association_items.append(item)
 
-    # 3. Build association_index_v2.json (Lexical inverted index)
+    # 3. Build association_index.json (Lexical inverted index)
     # term -> {given: [respondent_ids]}
     lexical_index: Dict[str, Dict[str, List[int]]] = {}
     for term, givens_map in term_given_respondents.items():
@@ -110,7 +110,7 @@ def build_artifacts(
             g: sorted(list(rids)) for g, rids in givens_map.items() if rids
         }
 
-    # 4. Build narrative_chunks_v2.json (Pure narratives WITHOUT association labels)
+    # 4. Build narrative_chunks.json (Pure narratives WITHOUT association labels)
     narrative_chunks: List[Dict[str, Any]] = []
     narrative_types = [
         ("about_self", "self_description"),
@@ -167,13 +167,13 @@ def build_artifacts(
     }
 
     # Write output files
-    with open(output_dir / "association_items_v2.json", "w", encoding="utf-8") as f:
+    with open(output_dir / "association_items.json", "w", encoding="utf-8") as f:
         json.dump(association_items, f, ensure_ascii=False, indent=2)
 
-    with open(output_dir / "association_index_v2.json", "w", encoding="utf-8") as f:
+    with open(output_dir / "association_index.json", "w", encoding="utf-8") as f:
         json.dump(lexical_index, f, ensure_ascii=False, indent=2)
 
-    with open(output_dir / "narrative_chunks_v2.json", "w", encoding="utf-8") as f:
+    with open(output_dir / "narrative_chunks.json", "w", encoding="utf-8") as f:
         json.dump(narrative_chunks, f, ensure_ascii=False, indent=2)
 
     with open(output_dir / "build_metrics.json", "w", encoding="utf-8") as f:
@@ -184,7 +184,7 @@ def build_artifacts(
 
 if __name__ == "__main__":
     base_dir = Path(__file__).resolve().parent.parent
-    dataset_file = base_dir / "data" / "dataset_v2.json"
+    dataset_file = base_dir / "data" / "dataset.json"
     out_dir = base_dir / "data"
     print(f"Building crowd RAG v2 artifacts from {dataset_file}...")
     metrics = build_artifacts(dataset_file, out_dir)

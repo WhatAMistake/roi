@@ -81,115 +81,23 @@ def convert_dataset(input_path: str, output_path: str):
     return records
 
 
-def create_association_index(records: list[dict], output_path: str):
-    """Создание индекса ассоциаций для быстрого поиска."""
-    
-    # Группируем ассоциации по данностям
-    index = {
-        "freedom": {},  # слово -> [id записей]
-        "nonsense": {},
-        "solitude": {},
-        "death": {}
-    }
-    
-    for record in records:
-        for givens in ["freedom", "nonsense", "solitude", "death"]:
-            for word in record["associations"][givens]:
-                if word not in index[givens]:
-                    index[givens][word] = []
-                index[givens][word].append(record["id"])
-    
-    # Сохраняем индекс
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(index, f, ensure_ascii=False, indent=2)
-    
-    print(f"Индекс ассоциаций создан")
-    print(f"Уникальных ассоциаций:")
-    for givens in index:
-        print(f"  {givens}: {len(index[givens])}")
-    
-    return index
-
-
-def create_rag_chunks(records: list[dict], output_path: str):
-    """Создание чанков для RAG из нарративов."""
-    
-    chunks = []
-    
-    for record in records:
-        # Чанк о себе
-        if record["narratives"]["about_self"]:
-            chunks.append({
-                "id": f"{record['id']}_self",
-                "record_id": record["id"],
-                "type": "self_description",
-                "demographics": record["demographics"],
-                "text": record["narratives"]["about_self"],
-                "associations": record["associations"]
-            })
-        
-        # Чанк о первом столкновении со смертью
-        if record["narratives"]["first_death"]:
-            chunks.append({
-                "id": f"{record['id']}_death",
-                "record_id": record["id"],
-                "type": "death_experience",
-                "demographics": record["demographics"],
-                "text": record["narratives"]["first_death"],
-                "associations": record["associations"]
-            })
-        
-        # Чанк о терапевте
-        if record["narratives"]["first_therapist"]:
-            chunks.append({
-                "id": f"{record['id']}_therapist",
-                "record_id": record["id"],
-                "type": "therapy_experience",
-                "demographics": record["demographics"],
-                "text": record["narratives"]["first_therapist"],
-                "associations": record["associations"]
-            })
-        
-        # Свободная форма
-        if record["narratives"]["free_form"]:
-            chunks.append({
-                "id": f"{record['id']}_free",
-                "record_id": record["id"],
-                "type": "free_form",
-                "demographics": record["demographics"],
-                "text": record["narratives"]["free_form"],
-                "associations": record["associations"]
-            })
-    
-    # Сохраняем чанки
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(chunks, f, ensure_ascii=False, indent=2)
-    
-    print(f"Создано {len(chunks)} RAG-чанков")
-    
-    return chunks
-
-
 if __name__ == "__main__":
-    # Пути
-    input_file = Path(__file__).parent.parent.parent / "AI-Existential Helper (crowd source) (Ответы).xlsx"
-    data_dir = Path(__file__).parent.parent / "data"
-    data_dir.mkdir(exist_ok=True)
-    
-    # Конвертируем
-    records = convert_dataset(
-        str(input_file),
-        str(data_dir / "dataset.json")
-    )
-    
-    # Создаём индекс ассоциаций
-    create_association_index(
-        records,
-        str(data_dir / "association_index.json")
-    )
-    
-    # Создаём RAG чанки
-    create_rag_chunks(
-        records,
-        str(data_dir / "rag_chunks.json")
-    )
+    import argparse
+    from crowd_artifacts import build_artifacts
+
+    root = Path(__file__).resolve().parent.parent
+    parser = argparse.ArgumentParser(description="Convert an XLSX and build the canonical crowd artifacts")
+    parser.add_argument("--input", type=Path, default=root.parent / "AI-Existential Helper (crowd source) (Ответы).xlsx")
+    parser.add_argument("--data-dir", type=Path, default=root / "data")
+    parser.add_argument("--force", action="store_true", help="Allow replacing existing canonical artifacts")
+    args = parser.parse_args()
+    names = ("dataset.json", "association_index.json", "association_items.json", "narrative_chunks.json")
+    existing = [name for name in names if (args.data_dir / name).exists()]
+    if existing and not args.force:
+        parser.error(f"Refusing to overwrite existing files: {', '.join(existing)}; use --force")
+    if not args.input.is_file():
+        parser.error(f"Input file does not exist: {args.input}")
+    args.data_dir.mkdir(parents=True, exist_ok=True)
+    dataset = args.data_dir / "dataset.json"
+    convert_dataset(str(args.input), str(dataset))
+    build_artifacts(dataset, args.data_dir)

@@ -38,3 +38,8 @@ def test_create_openai_client_injects_thinking_disabled():
     client.chat.completions.create(model="deepseek-v4-pro", messages=[])
     _, kwargs = original_create.call_args
     assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}
+
+def test_explicit_reasoning_is_not_overridden():
+    kwargs = {"model": "deepseek-v4-pro", "reasoning_effort": "high"}
+    assert apply_thinking_disabled(kwargs) == kwargs
+    assert "extra_body" not in kwargs

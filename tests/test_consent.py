@@ -51,7 +51,7 @@ def callback(choice="yes", version=CONSENT_VERSION):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("text,extra", [
-    ("/start", {}), ("something personal", {}), ("/assoc", {}), ("/analyze", {}),
+    ("/start", {}), ("something personal", {}), ("/assoc", {}), ("/lysis", {}),
     ("/shoot", {}), ("/remarque", {}), ("/meaning", {}), ("/feedback personal", {}),
     (None, {"voice": object()}), (None, {"photo": [object()]}),
     (None, {"sticker": object()}),

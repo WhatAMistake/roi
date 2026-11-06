@@ -55,8 +55,8 @@ def term_is_exact(query_term: str, candidate_term: str) -> bool:
 class SemanticLOROEvaluator:
     def __init__(
         self,
-        dataset_path: str | Path = "data/dataset_v2.json",
-        items_path: str | Path = "data/association_items_v2.json",
+        dataset_path: str | Path = "data/dataset.json",
+        items_path: str | Path = "data/association_items.json",
         model_name: str = DEFAULT_MODEL,
         config: Optional[EvidenceWeightConfig] = None,
     ):
@@ -317,8 +317,8 @@ if __name__ == "__main__":
     from evaluate_crowd_exact import evaluate_exact_loro
 
     parser = argparse.ArgumentParser(description="Evaluate Crowd Association Semantic Retrieval")
-    parser.add_argument("--dataset", default="data/dataset_v2.json")
-    parser.add_argument("--items", default="data/association_items_v2.json")
+    parser.add_argument("--dataset", default="data/dataset.json")
+    parser.add_argument("--items", default="data/association_items.json")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--sim-floor", type=float, default=None, help="Similarity noise floor")
     parser.add_argument("--exact-boost", type=float, default=None, help="Exact-match weight multiplier")

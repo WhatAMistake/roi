@@ -28,9 +28,9 @@ TRACKED_FILES = [
 
 # Known bot commands — never announce these as "new"
 EXISTING_COMMANDS = [
-    "start", "help", "lang", "switchlang", "reset", "assoc", "analyze",
+    "start", "help", "lang", "switchlang", "reset", "assoc", "lysis",
     "meta", "void", "silence", "meaning", "feedback", "meaning_where",
-    "askprob", "stats", "look", "admin", "saveall", "recover", "dump",
+    "askprob", "stats", "admin", "saveall", "recover", "dump",
 ]
 
 # Caps so prompts stay focused

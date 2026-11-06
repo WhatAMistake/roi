@@ -2,8 +2,8 @@
 Rebuild the separate Qdrant vector index for existential associations (v2).
 
 Features:
-- Separate collection: existential_associations_v2
-- One point = one (given, term) record from association_items_v2.json
+- Separate collection: existential_associations
+- One point = one (given, term) record from association_items.json
 - Embedding text contains ONLY the association term (zero given leakage)
 - Given, respondent_count, given_share, cross_given_counts in payload
 - Deterministic UUIDv5 point IDs
@@ -23,7 +23,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 from sentence_transformers import SentenceTransformer
 
-DEFAULT_COLLECTION = "existential_associations_v2"
+DEFAULT_COLLECTION = "existential_associations"
 DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 NAMESPACE_UUID = uuid.UUID("a74f877d-78be-406a-a63b-010e9f45f9e1")
 
@@ -42,7 +42,7 @@ def rebuild_association_index(
     client: Optional[QdrantClient] = None,
 ) -> Dict[str, Any]:
     data_dir = Path(data_dir)
-    items_file = data_dir / "association_items_v2.json"
+    items_file = data_dir / "association_items.json"
     if not items_file.exists():
         raise FileNotFoundError(f"Missing association items artifact: {items_file}")
 
@@ -147,7 +147,7 @@ def rebuild_association_index(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Rebuild Qdrant existential associations v2 collection")
+    parser = argparse.ArgumentParser(description="Rebuild Qdrant existential associations collection")
     parser.add_argument("--data-dir", default="data", help="Directory with artifacts and qdrant storage")
     parser.add_argument("--collection", default=DEFAULT_COLLECTION, help="Qdrant collection name")
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Embedding model name")

@@ -1,25 +1,13 @@
+"""Inspect the soft question-initiative policy at a few preference values."""
 import sys
 from pathlib import Path
-project_root = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(project_root / 'src'))
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from therapist_bot import ExistentialTherapistBot
 
 
-def count_ask_instructions(prob, iterations=200):
-    bot = ExistentialTherapistBot(api_key='TEST', use_rag=False, language='en')
-    bot.ask_question_prob = prob
-    count = 0
-    for _ in range(iterations):
-        msgs = bot._build_messages('I am not sure about my decisions and feel lost')
-        system_msgs = [m.get('content', '') for m in msgs if m.get('role') == 'system']
-        if any('Ask ONE' in content for content in system_msgs):
-            count += 1
-    return count
-
-
-if __name__ == '__main__':
-    for p in [0.0, 0.1, 0.3, 0.6, 1.0]:
-        cnt = count_ask_instructions(p, iterations=200)
-        print(f'prob={p} -> ask_count={cnt} (out of 200)')
-    print('Done')
+if __name__ == "__main__":
+    bot = ExistentialTherapistBot(api_key="TEST", use_rag=False, language="en")
+    for preference in (0.0, 0.5, 1.0):
+        bot.ask_question_prob = preference
+        print(f"{preference}: {bot._build_messages('I feel lost')[-2]['content']}")

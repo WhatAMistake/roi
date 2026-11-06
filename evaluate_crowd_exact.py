@@ -2,7 +2,7 @@
 Exact Lexical Baseline Evaluator for Crowd Associations (Leave-One-Respondent-Out).
 
 Validates the crowdsourced associative field baseline without embeddings:
-python evaluate_crowd_exact.py [path_to_dataset_v2.json]
+python evaluate_crowd_exact.py [path_to_dataset.json]
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ def normalize_association_term(term: str) -> str:
 def evaluate_exact_loro(dataset_path: str | Path) -> Dict[str, Any]:
     dataset_path = Path(dataset_path)
     if not dataset_path.exists():
-        # Fallback to data/dataset_v2.json if passed filename only
+        # Resolve a filename relative to data/ if needed.
         fallback = Path(__file__).resolve().parent / "data" / dataset_path.name
         if fallback.exists():
             dataset_path = fallback
@@ -145,6 +145,6 @@ def print_evaluation_report(results: Dict[str, Any]):
 
 
 if __name__ == "__main__":
-    target = sys.argv[1] if len(sys.argv) > 1 else "data/dataset_v2.json"
+    target = sys.argv[1] if len(sys.argv) > 1 else "data/dataset.json"
     res = evaluate_exact_loro(target)
     print_evaluation_report(res)

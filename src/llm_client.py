@@ -8,6 +8,9 @@ THINKING_DISABLED = {"thinking": {"type": "disabled"}}
 
 def apply_thinking_disabled(kwargs: dict[str, Any]) -> dict[str, Any]:
     """Force DeepSeek V4 thinking off. Unknown to other models, so skip them."""
+    # An explicit reasoning request must not be overridden by the legacy default.
+    if kwargs.get("reasoning_effort") is not None:
+        return kwargs
     model = str(kwargs.get("model") or "")
     if "deepseek" not in model.lower():
         return kwargs

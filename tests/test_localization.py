@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script to verify localization fixes for /analyze and /meaning commands.
+Test script to verify localization fixes for /lysis and /meaning commands.
 """
 
 import sys
@@ -157,8 +157,8 @@ def simulate_bot_behavior():
     print("Simulating bot behavior...")
     print("=" * 60)
     
-    # Simulate /analyze command
-    print("\n--- Simulating /analyze (English) ---")
+    # Simulate /lysis command
+    print("\n--- Simulating /lysis (English) ---")
     lang = "en"
     story = "I feel anxious about my future and don't know what path to take."
     context = ""
@@ -177,7 +177,7 @@ def simulate_bot_behavior():
     print(f"User prompt: {meaning_prompt[:100]}...")
     
     # Simulate Russian
-    print("\n--- Simulating /analyze (Russian) ---")
+    print("\n--- Simulating /lysis (Russian) ---")
     lang = "ru"
     story = "Я чувствую тревогу о будущем и не знаю, какой путь выбрать."
     detected = "СВОБОДА"
@@ -199,7 +199,7 @@ def main():
     """Run all tests."""
     print("\n" + "=" * 60)
     print("LOCALIZATION TEST SUITE")
-    print("Testing fixes for /analyze and /meaning commands")
+    print("Testing fixes for /lysis and /meaning commands")
     print("=" * 60)
     
     results = []

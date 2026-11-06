@@ -1,6 +1,6 @@
 """Film-frame flow handlers.
 
-Integrates into the existing user_states state machine exactly like /assoc and /analyze.
+Integrates into the existing user_states state machine exactly like /assoc and /lysis.
 Uses states: ff_describe, ff_preview, ff_edit.
 """
 

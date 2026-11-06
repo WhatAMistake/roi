@@ -2,7 +2,7 @@
 Crowd Association RAG v2 Service.
 
 Provides:
-- search_similar_associations: vector retrieval over existential_associations_v2
+- search_similar_associations: vector retrieval over existential_associations
 - association_evidence_weight: explicit mathematical weighting
   (similarity, specificity, consensus, hybrid exact-match boost)
 - aggregate_given_evidence: hypothesis scoring, top-k bounded aggregation with
@@ -29,7 +29,7 @@ from src.crowd_artifacts import normalize_association_term
 logger = logging.getLogger(__name__)
 
 GIVENS = ["freedom", "nonsense", "solitude", "death"]
-DEFAULT_COLLECTION = "existential_associations_v2"
+DEFAULT_COLLECTION = "existential_associations"
 DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
 

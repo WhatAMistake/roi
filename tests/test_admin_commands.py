@@ -102,8 +102,8 @@ def test_admin_commands():
         
         print("   ✅ /stats logic works correctly!")
         
-        # Test /look37 logic
-        print("\n--- Testing /look37 command logic ---")
+        # Check the sample history files.
+        print("\n--- Testing sample history loading ---")
         
         def load_user_history(user_id):
             history_path = histories_dir / f"user_{user_id}.json"
@@ -132,7 +132,7 @@ def test_admin_commands():
         assert not empty_data['history'], "Non-existent user should have empty history"
         print("   Non-existent user 999999: No history found (correct)")
         
-        print("   ✅ /look37 logic works correctly!")
+        print("   ✅ Sample history loading works correctly!")
         
         print("\n" + "=" * 60)
         print("🎉 ALL ADMIN COMMAND TESTS PASSED!")

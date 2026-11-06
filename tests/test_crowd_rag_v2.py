@@ -72,7 +72,7 @@ def test_duplicate_term_per_respondent_not_doubled():
 
         build_artifacts(tmp_dataset, tmpdir)
 
-        with open(Path(tmpdir) / "association_items_v2.json", "r", encoding="utf-8") as f:
+        with open(Path(tmpdir) / "association_items.json", "r", encoding="utf-8") as f:
             items = json.load(f)
 
         bird_items = [it for it in items if it["term"] == "птица" and it["given"] == "freedom"]
@@ -80,6 +80,25 @@ def test_duplicate_term_per_respondent_not_doubled():
         # Respondent 1 entered it twice, respondent 2 entered it once -> respondent_count must be 2
         assert bird_items[0]["respondent_count"] == 2
         assert bird_items[0]["respondent_ids"] == [1, 2]
+
+
+def test_artifact_builder_writes_canonical_formats(tmp_path):
+    dataset = [{
+        "id": 1,
+        "associations": {"freedom": ["полёт"], "nonsense": [], "solitude": [], "death": []},
+        "narratives": {"school_story": "A story"},
+        "demographics": {},
+    }]
+    path = tmp_path / "dataset.json"
+    path.write_text(json.dumps(dataset, ensure_ascii=False), encoding="utf-8")
+    build_artifacts(path, tmp_path)
+    index = json.loads((tmp_path / "association_index.json").read_text(encoding="utf-8"))
+    items = json.loads((tmp_path / "association_items.json").read_text(encoding="utf-8"))
+    narratives = json.loads((tmp_path / "narrative_chunks.json").read_text(encoding="utf-8"))
+    assert index["полет"]["freedom"] == [1]
+    assert items[0]["respondent_ids"] == [1]
+    assert narratives[0]["text"] == "A story"
+    assert "associations" not in narratives[0]
 
 
 # Criterion 2: ё/е canonical normalization equivalence
@@ -93,9 +112,9 @@ def test_yo_e_canonical_normalization():
 
 # Criterion 3: Ambiguous term with multiple givens has given_share < 1.0
 def test_ambiguous_term_has_given_share_less_than_one():
-    # Load actual generated association_items_v2.json
-    items_path = Path("data/association_items_v2.json")
-    assert items_path.exists(), "association_items_v2.json must exist"
+    # Load actual generated association items.
+    items_path = Path("data/association_items.json")
+    assert items_path.exists(), "association_items.json must exist"
 
     with open(items_path, "r", encoding="utf-8") as f:
         items = json.load(f)
@@ -161,8 +180,8 @@ def test_weak_scores_return_undetermined():
 
 # Criterion 6: Narrative retrieval does not vote for givens
 def test_narrative_retrieval_does_not_vote_on_given():
-    chunks_path = Path("data/narrative_chunks_v2.json")
-    assert chunks_path.exists(), "narrative_chunks_v2.json must exist"
+    chunks_path = Path("data/narrative_chunks.json")
+    assert chunks_path.exists(), "narrative_chunks.json must exist"
 
     with open(chunks_path, "r", encoding="utf-8") as f:
         chunks = json.load(f)
@@ -191,7 +210,7 @@ def test_rebuild_picks_up_updated_json():
                 "respondent_ids": [101, 102, 103],
             }
         ]
-        with open(tmp_data / "association_items_v2.json", "w", encoding="utf-8") as f:
+        with open(tmp_data / "association_items.json", "w", encoding="utf-8") as f:
             json.dump(mock_items, f)
 
         res = rebuild_association_index(

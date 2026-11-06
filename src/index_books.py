@@ -153,6 +153,9 @@ class BookIndexer:
         
         if chapters:
             # Если есть главы — чанки по главам
+            # Preserve front matter preceding the first detected chapter.
+            if chapters[0][1] > 0:
+                chapters = [("", 0, chapters[0][1])] + chapters
             for i, (chapter_title, start, end) in enumerate(chapters):
                 chapter_text = self.clean_text(text[start:end])
                 
