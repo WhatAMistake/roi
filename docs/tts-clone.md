@@ -58,7 +58,7 @@ Completed output URLs may expire. Polling/download billing and task retention
 are not established here.
 
 The probe reports elapsed polling wait, the last known task state and the
-last poll's HTTP status. `TTS_CLONE_TIMEOUT` (default 12, maximum 120 seconds)
+last poll's HTTP status. `TTS_CLONE_TIMEOUT` (default 12, maximum 300 seconds)
 is a shared deadline for preparation, submission, polling and download in live
 mode; on resume it covers polling and download. There is no fixed poll-count
 limit. Network timeouts are best-effort, not a hard process-kill deadline.

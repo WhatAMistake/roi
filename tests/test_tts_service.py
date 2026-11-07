@@ -332,7 +332,23 @@ class FakeClock:
         self.now += duration
 
 
-@pytest.mark.parametrize("timeout,expected_polls", [(3, 3), (8, 8)])
+@pytest.mark.parametrize("value", ["0.01", "120", "242", "300"])
+def test_clone_timeout_accepts_values_up_to_300(monkeypatch, value):
+    monkeypatch.setenv("TTS_CLONE_TIMEOUT", value)
+    assert tts.clone_timeout() == float(value)
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "300.01", "nan", "inf", "invalid"])
+def test_invalid_clone_timeout_preserves_fable_fallback(configured, monkeypatch, value):
+    monkeypatch.setenv("TTS_CLONE_TIMEOUT", value)
+    _, factory = fake_session(monkeypatch)
+    client = MagicMock()
+    tts.generate_speech(client, "Hello", configured / "response.mp3")
+    factory.assert_not_called()
+    client.audio.speech.create.assert_called_once_with(model="tts-1", voice="fable", input="Hello")
+
+
+@pytest.mark.parametrize("timeout,expected_polls", [(3, 3), (8, 8), (242, 242), (300, 300)])
 def test_resume_polls_until_configured_deadline(configured, monkeypatch, timeout, expected_polls):
     clock = FakeClock()
     monkeypatch.setattr(tts, "time", clock)
@@ -347,6 +363,70 @@ def test_resume_polls_until_configured_deadline(configured, monkeypatch, timeout
     assert observed[-1] == ("RUNNING", 200)
     assert all(0 < call.kwargs["timeout"] <= timeout for call in session.get.call_args_list)
     session.post.assert_not_called()
+
+
+def test_live_polling_shares_242_second_deadline_with_preparation_and_submission(configured, monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(tts, "time", clock)
+    monkeypatch.setenv("TTS_CLONE_TIMEOUT", "242")
+    def prepare(path, timeout):
+        assert timeout == 242
+        clock.sleep(5)
+        return "data:audio/mp3;base64,dGVzdA=="
+    monkeypatch.setattr(tts, "reference_data_uri", prepare)
+    session, _ = fake_session(monkeypatch, task=Response(body={"status": "RUNNING"}))
+    def post(*args, **kwargs):
+        assert kwargs["timeout"] == 237
+        clock.sleep(10)
+        return Response(body={"id": "task-1"})
+    session.post.side_effect = post
+    client = MagicMock()
+    tts.generate_speech(client, "Hello", configured / "response.mp3")
+    assert clock.now == 242
+    assert session.get.call_count == 227
+    assert session.get.call_args_list[0].kwargs["timeout"] == 227
+    session.stream.assert_not_called()
+    client.audio.speech.create.assert_called_once_with(model="tts-1", voice="fable", input="Hello")
+
+
+@pytest.mark.parametrize("download_seconds,succeeds", [(225, True), (226, False)])
+def test_live_download_uses_remaining_shared_deadline(configured, monkeypatch, download_seconds, succeeds):
+    clock = FakeClock()
+    monkeypatch.setattr(tts, "time", clock)
+    monkeypatch.setenv("TTS_CLONE_TIMEOUT", "242")
+    def prepare(path, timeout):
+        clock.sleep(5)
+        return "data:audio/mp3;base64,dGVzdA=="
+    monkeypatch.setattr(tts, "reference_data_uri", prepare)
+    session, _ = fake_session(monkeypatch)
+    def post(*args, **kwargs):
+        clock.sleep(10)
+        return Response(body={"id": "task-1"})
+    session.post.side_effect = post
+    session.get.side_effect = [
+        Response(body={"status": "RUNNING"}),
+        Response(body={"status": "SUCCEEDED", "output": ["https://example.com/output.mp3"]}),
+    ]
+    class SlowAudio(Response):
+        def iter_bytes(self):
+            clock.sleep(download_seconds)
+            yield b"audio"
+    session.stream.return_value = SlowAudio()
+    validate = MagicMock(return_value=1.0)
+    monkeypatch.setattr(tts, "validate_audio", validate)
+    client = MagicMock()
+    output = configured / "response.mp3"
+    tts.generate_speech(client, "Hello", output)
+    assert session.stream.call_args.kwargs["timeout"] == 226
+    if succeeds:
+        assert output.read_bytes() == b"audio"
+        assert validate.call_args.kwargs["timeout"] == 1
+        client.audio.speech.create.assert_not_called()
+    else:
+        assert clock.now == 242
+        assert not output.exists()
+        validate.assert_not_called()
+        client.audio.speech.create.assert_called_once_with(model="tts-1", voice="fable", input="Hello")
 
 
 def test_live_saves_task_before_first_poll_and_runs_past_five(configured, monkeypatch):
