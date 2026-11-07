@@ -29,6 +29,8 @@ from src.crowd_artifacts import normalize_association_term
 logger = logging.getLogger(__name__)
 
 GIVENS = ["freedom", "nonsense", "solitude", "death"]
+# Matches the current rebuild script and shipped storage. Older installations
+# can explicitly supply their existing existential_associations_v2 collection.
 DEFAULT_COLLECTION = "existential_associations"
 DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
@@ -211,12 +213,35 @@ class CrowdAssociationService:
             self._qdrant = QdrantClient(path=str(storage_path))
         return self._qdrant
 
+    def check_index_status(self) -> Dict[str, Any]:
+        """Inspect the association collection without creating or modifying it."""
+        status: Dict[str, Any] = {
+            "collection": self.collection_name,
+            "collection_exists": False,
+            "indexed_points": 0,
+            "available": False,
+        }
+        try:
+            names = {c.name for c in self.qdrant.get_collections().collections}
+            if self.collection_name not in names:
+                status["message"] = "Association collection does not exist."
+                return status
+            status["collection_exists"] = True
+            info = self.qdrant.get_collection(collection_name=self.collection_name)
+            status["indexed_points"] = int(info.points_count or 0)
+            status["available"] = status["indexed_points"] > 0
+            status["message"] = "OK" if status["available"] else "Association collection is empty."
+        except Exception as exc:
+            status["message"] = f"Could not inspect association collection: {exc}"
+        return status
+
     def search_similar_associations(
         self,
         query: str,
         n_results: int = 30,
         filter_respondent_id: Optional[int] = None,
         use_fragments: bool = True,
+        given: Optional[str] = None,
     ) -> List[AssociationHit]:
         """
         Retrieves top similar associations for query.
@@ -225,6 +250,12 @@ class CrowdAssociationService:
         """
         if not query or not query.strip():
             return []
+
+        if given is not None and given not in GIVENS:
+            raise ValueError("Unknown existential given")
+        status = self.check_index_status()
+        if not status["available"]:
+            raise RuntimeError(status["message"])
 
         fragments = split_query_fragments(query) if use_fragments else [query.strip()]
         if not fragments:
@@ -244,16 +275,18 @@ class CrowdAssociationService:
             query_vector = emb.tolist()
 
             # Optional respondent filter for leave-one-out evaluation
-            q_filter = None
+            must = []
+            must_not = []
+            if given is not None:
+                must.append(qmodels.FieldCondition(
+                    key="given", match=qmodels.MatchValue(value=given)
+                ))
             if filter_respondent_id is not None:
-                q_filter = qmodels.Filter(
-                    must_not=[
-                        qmodels.FieldCondition(
-                            key="respondent_ids",
-                            match=qmodels.MatchValue(value=filter_respondent_id),
-                        )
-                    ]
-                )
+                must_not.append(qmodels.FieldCondition(
+                    key="respondent_ids",
+                    match=qmodels.MatchValue(value=filter_respondent_id),
+                ))
+            q_filter = qmodels.Filter(must=must, must_not=must_not) if must or must_not else None
 
             search_response = self.qdrant.query_points(
                 collection_name=self.collection_name,
@@ -266,19 +299,25 @@ class CrowdAssociationService:
             for pt in search_response:
                 payload = pt.payload or {}
                 term = payload.get("term", "")
-                given = payload.get("given", "")
+                hit_given = payload.get("given", "")
+                if given is not None and hit_given != given:
+                    continue
                 sim = float(pt.score)
 
                 # Hybrid scoring: exact lexical match between the normalized
                 # fragment and the normalized crowd term.
-                is_exact = is_exact_lexical_match(term, fragment_text) or sim >= self.config.exact_similarity_threshold
+                is_exact = (
+                    normalize_association_term(term) == normalize_association_term(fragment_text)
+                    if given is not None else
+                    is_exact_lexical_match(term, fragment_text) or sim >= self.config.exact_similarity_threshold
+                )
 
-                key = (given, term)
+                key = (hit_given, term)
                 if key not in all_hits_by_key or sim > all_hits_by_key[key].similarity:
                     hit = AssociationHit(
                         term=term,
                         display_term=payload.get("display_term", term),
-                        given=given,
+                        given=hit_given,
                         similarity=round(sim, 4),
                         respondent_count=int(payload.get("respondent_count", 1)),
                         given_share=float(payload.get("given_share", 1.0)),

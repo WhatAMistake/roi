@@ -147,6 +147,23 @@ class ExistentialRAG:
         self._records_by_id: dict[Any, dict[str, Any]] = {
             r.get("id"): r for r in self.dataset if isinstance(r, dict) and "id" in r
         }
+        # Exact /assoc matches come from the original respondent corpus, not
+        # the derived lexical or vector indexes.
+        self._exact_associations: dict[tuple[str, str], set[Any]] = {}
+        for record in self.dataset:
+            if not isinstance(record, dict) or record.get("id") is None:
+                continue
+            record_associations = record.get("associations", {})
+            if not isinstance(record_associations, dict):
+                continue
+            for given in GIVENS:
+                words = record_associations.get(given, [])
+                if not isinstance(words, list):
+                    continue
+                for word in words:
+                    term = normalize_association_term(word) if isinstance(word, str) else ""
+                    if term:
+                        self._exact_associations.setdefault((given, term), set()).add(record["id"])
 
         self.association_index: dict[str, Any] = self._load_json("association_index.json", default={})
         self.narrative_chunks: list[dict[str, Any]] = self._load_json("narrative_chunks.json", default=[])
@@ -482,6 +499,8 @@ class ExistentialRAG:
             "similar_profiles": [],
             "semantic_evidence": [],
             "crowd_hypothesis": {},
+            "semantic_status": {"state": "not_requested"},
+            "result_status": "no_matches",
             "epistemic_note": (
                 "Matches reflect anonymized respondent associations in the study corpus, "
                 "not a clinical assessment or psychological fact about the user."
@@ -492,55 +511,93 @@ class ExistentialRAG:
             return analysis
 
         seen_patterns: set[tuple[str, str]] = set()
-        query_terms: list[str] = []
+        query_terms: list[tuple[str, str]] = []
 
         for given, words in associations.items():
-            if not isinstance(words, list):
+            if given not in GIVENS or not isinstance(words, list):
                 continue
             for raw_word in words:
-                clean_word = (raw_word or "").strip()
+                clean_word = raw_word.strip() if isinstance(raw_word, str) else ""
                 norm_word = normalize_association_term(clean_word)
                 if not norm_word:
                     continue
-                query_terms.append(clean_word)
-
                 pattern_key = (given, norm_word)
                 if pattern_key in seen_patterns:
                     continue
                 seen_patterns.add(pattern_key)
+                query_terms.append((given, clean_word))
 
-                matches = self.search_associations(clean_word, given if given in GIVENS else None)
-                if matches:
-                    unique_rids = {m.get("id") for m in matches if m.get("id") is not None}
+                # Each term/given is independent of vector retrieval and of
+                # whether other terms occurred in the same respondent profile.
+                respondent_ids = self._exact_associations.get((given, norm_word), set())
+                if respondent_ids:
                     analysis["matched_patterns"].append({
                         "givens": given,
                         "word": clean_word,
                         "normalized_word": norm_word,
-                        "count": len(unique_rids) or len(matches),
+                        "count": len(respondent_ids),
                         "source_kind": "crowd_association_lexical",
                     })
 
         analysis["matched_patterns"].sort(key=lambda x: x["count"], reverse=True)
 
-        # Основной семантический анализ через CrowdAssociationService v2 (без дублирующего движка)
-        if self.crowd_service and query_terms:
-            combined_query = ", ".join(query_terms)
+        if query_terms and not self.crowd_service:
+            analysis["semantic_status"] = {"state": "unavailable", "message": "Crowd service is unavailable."}
+            analysis["result_status"] = "semantic_unavailable"
+        elif query_terms:
             try:
-                hits = self.search_similar_associations(combined_query, n_results=15)
-                if hits:
-                    hypothesis = self.aggregate_given_evidence(hits)
+                index_status = self.crowd_service.check_index_status()
+                analysis["semantic_status"] = {**index_status, "state": "available" if index_status["available"] else "unavailable"}
+                if not index_status["available"]:
+                    analysis["result_status"] = "semantic_unavailable"
+                    return analysis
+
+                all_hits = []
+                for given, term in query_terms:
+                    hits = self.crowd_service.search_similar_associations(
+                        term, n_results=15, use_fragments=False, given=given
+                    )
+                    all_hits.extend(hit for hit in hits if hit.given == given and hit.weight > 0)
+
+                # Keep per-input evidence, but don't let the same corpus item
+                # vote multiple times in the existing aggregation formula.
+                evidence_fields = {
+                    "given", "term", "display_term", "similarity", "respondent_count",
+                    "given_share", "weight", "is_exact", "matched_fragment",
+                }
+                analysis["semantic_evidence"] = [
+                    {key: value for key, value in hit.to_dict().items() if key in evidence_fields}
+                    for hit in all_hits
+                ]
+                unique_hits = {}
+                for hit in all_hits:
+                    key = (hit.given, hit.term)
+                    if key not in unique_hits or hit.weight > unique_hits[key].weight:
+                        unique_hits[key] = hit
+                if unique_hits:
+                    hypothesis = self.aggregate_given_evidence(list(unique_hits.values()))
                     if hypothesis is not None:
                         hyp_dict = hypothesis.to_dict() if hasattr(hypothesis, "to_dict") else {}
                         analysis["crowd_hypothesis"] = hyp_dict
-                        analysis["semantic_evidence"] = hyp_dict.get("evidence", [])
                         primary = hyp_dict.get("primary")
                         secondary = hyp_dict.get("secondary")
                         if primary:
                             analysis["suggested_themes"].append(primary)
-                        if secondary and secondary not in analysis["suggested_themes"]:
+                        if primary and secondary and secondary not in analysis["suggested_themes"]:
                             analysis["suggested_themes"].append(secondary)
+                if analysis["crowd_hypothesis"].get("primary"):
+                    analysis["result_status"] = "hypothesis"
+                elif all_hits or analysis["matched_patterns"]:
+                    analysis["result_status"] = "no_confident_hypothesis"
             except Exception as exc:
                 logger.warning("[RAG] CrowdAssociationService analysis failed: %s", exc)
+                analysis["semantic_status"].update(
+                    {"state": "unavailable", "message": "Crowd semantic search failed."}
+                )
+                analysis["result_status"] = "semantic_unavailable"
+                analysis["semantic_evidence"] = []
+                analysis["crowd_hypothesis"] = {}
+                analysis["suggested_themes"] = []
 
         return analysis
 

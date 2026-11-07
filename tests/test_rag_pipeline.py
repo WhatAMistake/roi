@@ -467,7 +467,10 @@ def test_legacy_narrative_file_is_not_loaded(tmp_path: Path):
 # 8. CrowdAssociationService v2 integration & canonical ё/е association search
 def test_associations_use_yo_normalization_and_crowd_service_v2(sample_data_dir: Path):
     crowd_mock = MagicMock()
-    crowd_mock.search_similar_associations.return_value = [SimpleNamespace(term="полет", given="freedom")]
+    crowd_mock.check_index_status.return_value = {"available": True}
+    hit = SimpleNamespace(term="полет", given="freedom", weight=0.9,
+                          to_dict=lambda: {"term": "полет", "given": "freedom", "weight": 0.9})
+    crowd_mock.search_similar_associations.return_value = [hit]
     crowd_mock.aggregate_given_evidence.return_value = SimpleNamespace(
         to_dict=lambda: {
             "primary": "freedom",
@@ -496,6 +499,9 @@ def test_associations_use_yo_normalization_and_crowd_service_v2(sample_data_dir:
     assert analysis["suggested_themes"] == ["freedom", "solitude"]
     assert analysis["crowd_hypothesis"]["primary"] == "freedom"
     assert len(analysis["semantic_evidence"]) == 1
+    crowd_mock.search_similar_associations.assert_called_once_with(
+        "полет", n_results=15, use_fragments=False, given="freedom"
+    )
     assert "not a clinical assessment" in analysis["epistemic_note"]
 
 

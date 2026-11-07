@@ -5,6 +5,7 @@ Telegram бот для экзистенциальной терапии.
 import os
 import asyncio
 import html
+import logging
 import re
 import threading
 import time
@@ -106,6 +107,9 @@ def decrypt_data(data: str, key: Optional[bytes]) -> str:
 try:
     from aiogram import Bot, Dispatcher, types, F
     from aiogram.filters import Command
+    from aiogram.exceptions import (
+        TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter, TelegramServerError,
+    )
     from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
     from aiogram.utils.keyboard import ReplyKeyboardBuilder
     AIogram_AVAILABLE = True
@@ -145,6 +149,9 @@ except ImportError:
     types = _DummyAiogramTypes()
     F = _DummyF()
     Bot = Dispatcher = Command = None
+    class _DummyTelegramError(Exception):
+        pass
+    TelegramBadRequest = TelegramNetworkError = TelegramRetryAfter = TelegramServerError = _DummyTelegramError
     ReplyKeyboardMarkup = _DummyMarkup
     KeyboardButton = _DummyKeyboardButton
     ReplyKeyboardBuilder = _DummyReplyKeyboardBuilder
@@ -157,6 +164,18 @@ from code_reviewer import check_and_generate_changelog, save_current_hashes
 
 
 DEFAULT_LLM_MODEL = "deepseek-v4.1-flash"
+logger = logging.getLogger(__name__)
+_MARKUP_TOKEN = re.compile(
+    r"<[A-Za-z/!][^<>]*>|&(?:#[0-9]+|#[xX][0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]+);"
+)
+
+
+class DeliveryError(RuntimeError):
+    """A response was not fully confirmed by Telegram."""
+
+    def __init__(self, delivered: str = ""):
+        super().__init__("Telegram response delivery failed")
+        self.delivered = delivered
 
 
 def _parse_admin_id(raw_value: Optional[str]) -> int:
@@ -1743,7 +1762,7 @@ class TelegramTherapistBot:
             self.temp_associations[user_id]["freedom"] = words[:5]
             self.user_states[user_id] = "assoc_nonsense"
             await message.answer(
-                t(lang, "assoc_confirm", label=("Свобода" if lang == "ru" else "Freedom"), words=', '.join(words[:5])),
+                t(lang, "assoc_confirm", label=("Свобода" if lang == "ru" else "Freedom"), words=html.escape(', '.join(words[:5]))),
                 parse_mode="HTML"
             )
             await message.answer(t(lang, "assoc_nonsense_prompt"), parse_mode="HTML")
@@ -1755,7 +1774,7 @@ class TelegramTherapistBot:
             self.temp_associations[user_id]["nonsense"] = words[:5]
             self.user_states[user_id] = "assoc_solitude"
             await message.answer(
-                t(lang, "assoc_confirm", label=("Бессмысленность" if lang == "ru" else "Meaninglessness"), words=', '.join(words[:5])),
+                t(lang, "assoc_confirm", label=("Бессмысленность" if lang == "ru" else "Meaninglessness"), words=html.escape(', '.join(words[:5]))),
                 parse_mode="HTML"
             )
             await message.answer(t(lang, "assoc_solitude_prompt"), parse_mode="HTML")
@@ -1767,7 +1786,7 @@ class TelegramTherapistBot:
             self.temp_associations[user_id]["solitude"] = words[:5]
             self.user_states[user_id] = "assoc_death"
             await message.answer(
-                t(lang, "assoc_confirm", label=("Одиночество" if lang == "ru" else "Isolation"), words=', '.join(words[:5])),
+                t(lang, "assoc_confirm", label=("Одиночество" if lang == "ru" else "Isolation"), words=html.escape(', '.join(words[:5]))),
                 parse_mode="HTML"
             )
             await message.answer(t(lang, "assoc_death_prompt"), parse_mode="HTML")
@@ -1780,13 +1799,13 @@ class TelegramTherapistBot:
             # Все ассоциации собраны, анализируем
             associations = self.temp_associations[user_id]
 
-            summary_lines = [t(lang, "assoc_confirm", label=("Смерть" if lang == "ru" else "Death"), words=', '.join(words[:5]))]
+            summary_lines = [t(lang, "assoc_confirm", label=("Смерть" if lang == "ru" else "Death"), words=html.escape(', '.join(words[:5])))]
             summary_lines.append("")
             summary_lines.append(t(lang, "assoc_summary_intro"))
-            summary_lines.append(f"{('Свобода' if lang=='ru' else 'Freedom')}: {', '.join(associations.get('freedom', []))}")
-            summary_lines.append(f"{('Бессмысленность' if lang=='ru' else 'Meaninglessness')}: {', '.join(associations.get('nonsense', []))}")
-            summary_lines.append(f"{('Одиночество' if lang=='ru' else 'Isolation')}: {', '.join(associations.get('solitude', []))}")
-            summary_lines.append(f"{('Смерть' if lang=='ru' else 'Death')}: {', '.join(associations.get('death', []))}")
+            summary_lines.append(f"{('Свобода' if lang=='ru' else 'Freedom')}: {html.escape(', '.join(associations.get('freedom', [])))}")
+            summary_lines.append(f"{('Бессмысленность' if lang=='ru' else 'Meaninglessness')}: {html.escape(', '.join(associations.get('nonsense', [])))}")
+            summary_lines.append(f"{('Одиночество' if lang=='ru' else 'Isolation')}: {html.escape(', '.join(associations.get('solitude', [])))}")
+            summary_lines.append(f"{('Смерть' if lang=='ru' else 'Death')}: {html.escape(', '.join(associations.get('death', [])))}")
             summary_lines.append("")
             summary_lines.append(t(lang, "analyzing"))
             
@@ -1797,7 +1816,7 @@ class TelegramTherapistBot:
             # Получаем анализ
             therapist = self._get_therapist(user_id)
             
-            sent = await message.answer("...")
+            sent = await self._new_delivery_placeholder(message)
             try:
                 async with self._animate_loading_dots(sent):
                     source = self._stream_generic(therapist.analyze_associations_stream, associations)
@@ -1806,12 +1825,18 @@ class TelegramTherapistBot:
                     raise ValueError("Empty analysis")
                 title = 'Интерпретация' if lang == 'ru' else 'Interpretation'
                 prefix = f"{title}:\n\n"
-                await self._deliver_response(message, sent, prefix + strip_markdown(analysis),
-                                             [prefix + strip_markdown(part) for part in shown])
+                # Deliver the model's text verbatim, with parsing disabled. Formatting
+                # each incomplete prefix separately corrupts Markdown and identifiers.
+                await self._deliver_response(message, sent, prefix + analysis, shown)
                 self.user_states[user_id] = "chat"
                 del self.temp_associations[user_id]
+            except DeliveryError as exc:
+                await self._show_delivery_error(
+                    message, None if exc.delivered else sent,
+                    t(lang, "error_delivery_partial" if exc.delivered else "error_delivery"),
+                )
             except Exception:
-                await self._show_delivery_error(message, sent, t(lang, "error_llm"))
+                await self._show_delivery_error(message, sent, t(lang, "error_generation_incomplete"))
             finally:
                 if user_id in self.message_queue and self.message_queue[user_id]:
                     self.message_queue[user_id].pop(0)
@@ -1830,7 +1855,7 @@ class TelegramTherapistBot:
             return        
         therapist = self._get_therapist(user_id)
         
-        sent = await message.answer("...")
+        sent = await self._new_delivery_placeholder(message)
         try:
             async with self._animate_loading_dots(sent):
                 source = self._stream_generic(therapist.analyze_story_stream, text)
@@ -1839,11 +1864,15 @@ class TelegramTherapistBot:
                 raise ValueError("Empty analysis")
             title = 'Экзистенциальный отклик' if lang == 'ru' else 'Existential response'
             prefix = f"{title}:\n\n"
-            await self._deliver_response(message, sent, prefix + strip_markdown(analysis),
-                                         [prefix + strip_markdown(part) for part in shown])
+            await self._deliver_response(message, sent, prefix + analysis, shown)
             self.user_states[user_id] = "chat"
+        except DeliveryError as exc:
+            await self._show_delivery_error(
+                message, None if exc.delivered else sent,
+                t(lang, "error_delivery_partial" if exc.delivered else "error_delivery"),
+            )
         except Exception:
-            await self._show_delivery_error(message, sent, t(lang, "error_llm"))
+            await self._show_delivery_error(message, sent, t(lang, "error_generation_incomplete"))
         finally:
             if user_id in self.message_queue and self.message_queue[user_id]:
                 self.message_queue[user_id].pop(0)
@@ -2039,6 +2068,9 @@ class TelegramTherapistBot:
         """Анимирует индикатор ожидания (3 -> 2 -> 1 -> 2 -> 3 точки),
         пока модель генерирует ответ.
         """
+        if message is None:
+            yield
+            return
         stop_event = asyncio.Event()
 
         async def _runner():
@@ -2057,8 +2089,11 @@ class TelegramTherapistBot:
                     idx += 1
                     try:
                         await message.edit_text(frame)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning(
+                            "Telegram loading_edit failed: type=%s part=0 chars=%d",
+                            type(exc).__name__, len(frame),
+                        )
             except asyncio.CancelledError:
                 pass
 
@@ -2108,42 +2143,79 @@ class TelegramTherapistBot:
 
         Возвращает (полный_текст, список_префиксов).
         """
-        full = ""
-        shown = []
-
+        chunks = []
         async for chunk in chunk_source:
-            full += chunk
-            words = re.findall(r'\S+', full)
-            target = max(1, len(words) // words_per_tick)
-            while len(shown) < target:
-                n = (len(shown) + 1) * words_per_tick
-                if n >= len(words):
-                    shown.append(full)
+            chunks.append(chunk)
+        full = "".join(chunks)
+        return full, self._typing_prefixes(full, words_per_tick)
+
+    @staticmethod
+    def _typing_prefixes(text: str, words_per_tick: int = 3) -> list[str]:
+        """Build the typing simulation from the completed, unmodified text."""
+        if words_per_tick <= 0:
+            raise ValueError("words_per_tick must be positive")
+        words = list(re.finditer(r"\S+", text))
+        tokens = [(m.start(), m.end()) for m in _MARKUP_TOKEN.finditer(text)]
+        prefixes = []
+        for i in range(words_per_tick, len(words), words_per_tick):
+            end = words[i - 1].end()
+            for start, stop in tokens:
+                if start < end < stop:
+                    end = stop
                     break
-                match = list(re.finditer(r'\S+', full))[n - 1]
-                shown.append(full[:match.end()])
+            if not prefixes or len(prefixes[-1]) < end:
+                prefixes.append(text[:end])
+        if text and (not prefixes or prefixes[-1] != text):
+            prefixes.append(text)
+        return prefixes
 
-        if not shown or shown[-1] != full:
-            shown.append(full)
-        return full, shown
+    def _split_text(self, text: str, max_len: int = 4096) -> list[str]:
+        """Split literal text losslessly, outside HTML-tag and entity tokens.
 
-    def _split_text(self, text: str, max_len: int = 4000) -> list:
-        """Разбивает текст на части <= max_len, не обрезая на полуслове.
-
-        Разбиение идёт по границам предложений (точка, восклицательный,
-        вопросительный знак, многоточие, перенос строки). Если одно предложение
-        длиннее max_len, оно режется по пробелам (по границам слов).
+        Deliveries use parse_mode=None, so markup is never interpreted. Count
+        UTF-16 units conservatively for Telegram, including supplementary emoji.
         """
         if max_len <= 0:
             raise ValueError("max_len must be positive")
-        chunks = []
-        while len(text) > max_len:
-            boundary = max(text.rfind(" ", 0, max_len), text.rfind("\n", 0, max_len))
-            end = boundary + 1 if boundary > 0 else max_len
-            chunks.append(text[:end])
-            text = text[end:]
-        if text:
-            chunks.append(text)
+        protected = [(m.start(), m.end()) for m in _MARKUP_TOKEN.finditer(text)]
+        chunks: list[str] = []
+        start = 0
+        while start < len(text):
+            end = start
+            units = 0
+            while end < len(text):
+                size = 2 if ord(text[end]) > 0xFFFF else 1
+                if units + size > max_len:
+                    break
+                units += size
+                end += 1
+            if end == len(text):
+                chunks.append(text[start:end])
+                break
+            hard_end = end
+            for token_start, token_end in protected:
+                if token_start < end < token_end:
+                    end = token_start
+                    break
+            if end <= start:
+                # Literal delivery has parsing disabled. An oversized token
+                # cannot fit in any message, so preserve it across messages.
+                end = hard_end
+            fragment = text[start:end]
+            paragraph = fragment.rfind("\n\n")
+            paragraph_end = start + paragraph + 2
+            if (paragraph >= len(fragment) // 2
+                    and not any(a < paragraph_end < b for a, b in protected)):
+                end = start + paragraph + 2
+            else:
+                whitespace = list(re.finditer(r"\s+", fragment))
+                if whitespace:
+                    candidate = start + whitespace[-1].end()
+                    if (candidate - start >= len(fragment) // 2
+                            and not any(a < candidate < b for a, b in protected)):
+                        end = candidate
+            chunks.append(text[start:end])
+            start = end
         return chunks
 
     async def _generate_user_summary(self, user_id: int, therapist: ExistentialTherapistBot) -> str:
@@ -2273,59 +2345,124 @@ class TelegramTherapistBot:
         except Exception as e:
             print(f"[VOID] Text spacer failed: {type(e).__name__}: {e}")
 
+    async def _telegram_request(self, operation, call, *args, part_index=0, **kwargs):
+        """Retry transient Telegram failures without logging message contents."""
+        for attempt in range(1, 4):
+            try:
+                result = await call(*args, **kwargs)
+                if result is None or result is False:
+                    raise RuntimeError("Telegram did not confirm the request")
+                return result
+            except Exception as exc:
+                if (operation == "edit_text" and isinstance(exc, TelegramBadRequest)
+                        and "message is not modified" in str(exc).lower()):
+                    return True
+                retry_after = getattr(exc, "retry_after", None) if isinstance(exc, TelegramRetryAfter) else None
+                transient = isinstance(exc, (
+                    TelegramRetryAfter, TelegramNetworkError, TelegramServerError,
+                    asyncio.TimeoutError, ConnectionError, OSError,
+                ))
+                delay = max(0.0, float(retry_after)) if retry_after is not None else 0.5 * (2 ** (attempt - 1))
+                logger.warning(
+                    "Telegram %s failed: type=%s attempt=%d part=%d chars=%d retry_delay=%s",
+                    operation, type(exc).__name__, attempt, part_index,
+                    len(args[0]) if args and isinstance(args[0], str) else 0,
+                    delay if transient and attempt < 3 and delay <= 30 else None,
+                )
+                # A retry-after longer than the bounded wait is a failure, not
+                # permission to retry before Telegram's deadline.
+                if not transient or attempt == 3 or delay > 30:
+                    raise
+                await asyncio.sleep(delay)
+
     async def _show_delivery_error(self, message, sent, text):
+        if sent is not None:
+            try:
+                await self._telegram_request("edit_text", sent.edit_text, text, parse_mode=None)
+                return
+            except Exception:
+                pass  # _telegram_request logged the edit failure; try a new message.
         try:
-            await sent.edit_text(text)
+            await self._telegram_request("send_message", message.answer, text, parse_mode=None)
         except Exception:
-            await message.answer(text)
+            # Do not allow a framework traceback to expose Telegram's error
+            # message, which may contain private request text.
+            raise DeliveryError() from None
+
+    async def _new_delivery_placeholder(self, message):
+        try:
+            placeholder = await self._telegram_request(
+                "send_message", message.answer, "...", parse_mode=None,
+            )
+            if callable(getattr(placeholder, "edit_text", None)):
+                return placeholder
+            logger.warning("Telegram placeholder has no edit method: part=0")
+        except Exception:
+            pass  # The failed request was logged; the answer can be sent directly.
+        return None
 
     async def _deliver_response(self, message, sent, text, shown=None):
-        """Return exactly the response text accepted by Telegram."""
+        """Deliver only confirmed text; raise with the confirmed prefix on failure."""
         lang = self.user_langs.get(message.from_user.id, DEFAULT_LANG)
-        last = ""
-        if sent is not None and len(text) <= 4000 and shown:
-            for part in shown:
-                if not part:
-                    continue
-                try:
-                    await sent.edit_text(part)
-                    last = part
-                except Exception:
-                    pass
-                await asyncio.sleep(0.12)
         parts = self._split_text(text)
         delivered = ""
         for index, part in enumerate(parts):
+            target = sent if index == 0 else None
+            # The simulated typing animation operates on complete text, never
+            # directly on model tokens or partially parsed Markdown.
+            if target is None and index > 0 and shown:
+                try:
+                    target = await self._telegram_request(
+                        "send_message", message.answer, "...", part_index=index, parse_mode=None,
+                    )
+                    if not callable(getattr(target, "edit_text", None)):
+                        logger.warning("Telegram placeholder has no edit method: part=%d", index)
+                        target = None
+                except Exception:
+                    target = None
+            last = ""
             try:
-                if index == 0 and sent is not None:
-                    if last != part:
+                if target is not None:
+                    previews = self._typing_prefixes(part) if shown else [part]
+                    for preview in previews:
                         try:
-                            await sent.edit_text(part)
+                            await self._telegram_request(
+                                "edit_text", target.edit_text, preview,
+                                part_index=index, parse_mode=None,
+                            )
+                            last = preview
                         except Exception:
-                            await message.answer(part, reply_markup=get_main_keyboard(lang))
+                            # If deletion fails, retain any confirmed preview and
+                            # send only its suffix rather than publishing it twice.
+                            removed = False
                             try:
-                                await sent.delete()
-                            except Exception:
-                                print("[DELIVERY] Could not remove the streaming placeholder")
-                    delivered = part
+                                await self._telegram_request("delete_message", target.delete, part_index=index)
+                                removed = True
+                            except Exception as exc:
+                                logger.warning("Telegram placeholder deletion failed: type=%s part=%d",
+                                               type(exc).__name__, index)
+                            if removed:
+                                last = ""
+                            remaining = part[len(last):] if last else part
+                            if remaining:
+                                kwargs = {"reply_markup": get_main_keyboard(lang)} if index == len(parts) - 1 else {}
+                                await self._telegram_request(
+                                    "send_message", message.answer, remaining,
+                                    part_index=index, parse_mode=None, **kwargs,
+                                )
+                            last = part
+                            break
+                        if shown:
+                            await asyncio.sleep(0.12)
+                    delivered += part
                 else:
                     kwargs = {"reply_markup": get_main_keyboard(lang)} if index == len(parts) - 1 else {}
-                    await message.answer(part, **kwargs)
+                    await self._telegram_request(
+                        "send_message", message.answer, part, part_index=index, parse_mode=None, **kwargs,
+                    )
                     delivered += part
             except Exception:
-                partial = delivered or last
-                if partial:
-                    print("[DELIVERY] Telegram accepted only part of a response")
-                    try:
-                        await message.answer(
-                            "The rest of the response could not be delivered."
-                            if lang == "en" else
-                            "Не удалось доставить остальную часть ответа."
-                        )
-                    except Exception:
-                        pass
-                    return partial
-                raise
+                raise DeliveryError(delivered + last) from None
         return delivered
 
     async def _handle_chat(self, message: types.Message, text: str, is_voice: bool = False):
@@ -2351,7 +2488,7 @@ class TelegramTherapistBot:
                         raise
                     shown = None
                 else:
-                    sent = await message.answer("...")
+                    sent = await self._new_delivery_placeholder(message)
                     async with self._animate_loading_dots(sent):
                         response, shown = await self._smooth_stream(therapist, text)
                 if not response or not response.strip() or re.match(r"^Ошибка(?::|\s)", response):
@@ -2401,16 +2538,33 @@ class TelegramTherapistBot:
                 if not delivered:
                     therapist.history = previous
                 raise
+            except DeliveryError as exc:
+                therapist.history = previous
+                if exc.delivered:
+                    therapist.history = previous + [
+                        Message(role="user", content=text),
+                        Message(role="assistant", content=exc.delivered),
+                    ]
+                    timestamp = datetime.now().isoformat()
+                    recent = self.user_recent_messages.setdefault(user_id, [])
+                    recent.extend([
+                        {"role": "user", "content": text, "timestamp": timestamp},
+                        {"role": "assistant", "content": exc.delivered, "timestamp": timestamp},
+                    ])
+                    self.user_recent_messages[user_id] = recent[-16:]
+                    self.user_message_counts[user_id] = self.user_message_counts.get(user_id, 0) + 1
+                    if message.from_user.username:
+                        self.user_usernames[user_id] = message.from_user.username
+                    self.user_consecutive_messages[user_id] = 0
+                    self._save_user_prefs(force=True)
+                await self._show_delivery_error(
+                    message, None if exc.delivered else sent,
+                    t(lang, "error_delivery_partial" if exc.delivered else "error_delivery"),
+                )
             except Exception:
                 if not delivered:
                     therapist.history = previous
-                    try:
-                        if sent is not None:
-                            await self._show_delivery_error(message, sent, t(lang, "error_llm"))
-                        else:
-                            await message.answer(t(lang, "error_llm"))
-                    except Exception:
-                        pass
+                    await self._show_delivery_error(message, sent, t(lang, "error_llm"))
             finally:
                 if user_id in self.message_queue and self.message_queue[user_id]:
                     self.message_queue[user_id].pop(0)
@@ -2518,6 +2672,11 @@ class TelegramTherapistBot:
                 raise ValueError("Empty response")
             await self._deliver_response(message, sent, strip_markdown(response),
                                          [strip_markdown(part) for part in shown])
+        except DeliveryError as exc:
+            await self._show_delivery_error(
+                message, None if exc.delivered else sent,
+                t(lang, "error_delivery_partial" if exc.delivered else "error_delivery"),
+            )
         except Exception:
             await self._show_delivery_error(message, sent, t(lang, "error_llm"))
 
