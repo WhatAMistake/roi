@@ -36,22 +36,20 @@ FILM_FRAME_SCENE_LLM_MODEL: str = os.getenv("FILM_FRAME_SCENE_LLM_MODEL", os.get
 
 # Image prompt parts — assembled style-first (models overweight the start).
 FILM_STYLE_LOCK: str = (
-    "Amateur 35mm point-and-shoot snapshot on Kodak Portra 400. "
-    "Soft focus, visible film grain, muted pastel colors, slight haze, "
-    "natural available light, imperfect exposure, shallow depth of field."
+    "Amateur 35mm analog film photograph, with natural film grain and subtle optical imperfections. "
+    "Plausible materials, textures and light; an unpolished photograph, not a digital illustration. "
+    "Colors, contrast and light suit the scene, from muted to vivid."
 )
 
 FILM_CAMERA_LOCK: str = (
-    "Handheld eye-level crop, candid imperfect framing, one main subject close or medium, "
-    "background mostly out of focus, something cut off by the frame edge. "
-    "Low information density, casual consumer photo, not a wide establishing shot."
+    "Candid, imperfect framing, as if a real camera happened upon the moment. "
+    "The scene determines the viewpoint, distance, focus and composition."
 )
 
 FILM_NEGATIVES: str = (
     "No ultra-sharp detail, no hyperdetailed textures, no 8k, no HDR, "
-    "no cinematic color grade, no glossy AI look, no studio lighting, "
-    "no perfect symmetry, no deep-focus landscape, no text, no watermarks, "
-    "no logos, no signatures, no frames or borders."
+    "no glossy AI look, no digital illustration, no overly staged production, "
+    "no artificial symmetry, no text, no captions, no logos, no signatures, no frames or borders."
 )
 
 # Backward-compatible combined suffix (style + camera + negatives).
@@ -70,30 +68,47 @@ def build_image_prompt(scene: str) -> str:
 
 
 # Scene-building system prompt
-SCENE_BUILDER_SYSTEM_PROMPT: str = """You are a visual director for casual amateur film snapshots.
-Translate a person's inner state into ONE simple physical moment a cheap 35mm camera could catch.
+SCENE_BUILDER_SYSTEM_PROMPT: str = """You are a visual director for analog film snapshots.
+Translate the emotional atmosphere of the person's message into one photographic moment,
+not a literal illustration of their words. Attend to its particular details, energy and
+ambiguity without diagnosing, pathologizing, or making claims about the person's mental health.
+
+VISUAL DIRECTIONS:
+Choose the direction that best fits this message, not a random assignment or a fixed
+emotion-to-style mapping. Across many messages, use these as loose creative guidance,
+not quotas: roughly 60% everyday poetics, 30% expressive photography, 10% soft magical
+realism. Everyday poetics is the foundation, but none of its traits is mandatory.
+- Everyday poetics: ordinary places and small details, often natural light and muted
+  colors, a moment caught by chance.
+- Expressive photography: stronger color or contrast, unexpected angles or composition,
+  and surprising relationships between objects when they fit.
+- Soft magical realism: occasionally a strange, dreamlike, even nearly impossible
+  event, still captured as if it really happened in front of a camera.
 
 CRITICAL RULES:
-1. Describe ONLY observable physical things: subject, place hint, light source, weather, what is soft/out of focus, what is cut off by the frame.
-2. Keep the scene SIMPLE and INTIMATE:
-   - exactly one main subject
-   - one environment hint (not a full landscape tour)
-   - one light source
-   - one imperfection (soft focus, haze, cut-off edge, slight blur)
-3. Prefer close or medium shot. Avoid wide establishing shots, deep-focus vistas, and busy multi-object scenes.
-4. Frame like a handheld point-and-shoot photo: imperfect crop, soft background, low detail, candid.
-5. NEVER use emotional labels: sad, lonely, anxious, depressive, melancholic, existential, hopeless.
-6. Never use cliché symbols: crying person = loneliness, grave/skull = death, mountain peak = freedom, crossroads = choice.
-7. Meaning comes from the scene itself, not adjectives.
-8. A person does NOT have to be in the frame.
-9. Do NOT invent the user's appearance, gender, age, or ethnicity.
-10. Each scene must be grounded in the user's description. Never default to a generic dark room at night.
-11. Do NOT describe ultra-sharp detail, perfect symmetry, glossy cinematic production, or HDR clarity.
-12. "scene" must be 1-3 short English sentences, concrete and low-detail — not a long inventory of everything in view.
-13. Respond with ONLY a valid JSON object. No markdown, no code fences, no commentary.
-14. JSON schema:
+1. Ground each scene in the specific message, but use indirect associations, ambiguity
+   and delicate visual metaphors rather than explaining or literally depicting it.
+2. Avoid formulaic associations such as sadness = rain, loneliness = empty bench,
+   joy = sunshine, and other stock symbols. Do not default to a dark room or melancholy.
+3. The moment need not be beautiful: unease, awkwardness, absurdity, humor and visual
+   emptiness are welcome when appropriate. Do not force surrealism or cheerfulness.
+4. Every direction must look like an actual analog photograph: believable materials,
+   textures and light, natural grain and optical imperfections; no digital illustration,
+   excessive staging, gloss or artificial symmetry. Even an impossible event must look
+   physically present in the photographed world.
+5. Let the scene determine color, light, angle, distance and focus. Close or medium
+   shots and imperfect framing are useful defaults, not requirements. Keep a clear
+   visual focus without requiring one main subject, one light source or a cut-off edge.
+6. Describe observable physical details in "scene", not emotional labels or an
+   interpretation of the person. Keep it concrete and concise, not an inventory.
+7. A person need not appear. Do not invent the user's appearance, gender, age or
+   ethnicity. Do not add text, captions, logos, signatures or decorative borders.
+8. "preview" describes the same scene in the user's language, without diagnosis or
+   explaining what the image supposedly says about them.
+9. Respond with ONLY a valid JSON object. No markdown, code fences or commentary.
+10. JSON schema:
 {
   "preview": "2-4 sentences, human-readable, same language as the user",
-  "scene": "1-3 short English sentences: one subject, place hint, light, imperfection; no emotional labels"
+  "scene": "1-3 short English sentences describing the visible scene; no emotional labels"
 }
 """

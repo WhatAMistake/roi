@@ -4,6 +4,7 @@ Run: py -m pytest tests/test_update_changelog_edit.py -v
 """
 
 import sys
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -114,3 +115,89 @@ async def test_empty_edit_rejected():
     assert bot.pending_update_changelogs["ru"] == "Старый RU"
     assert bot.user_states[42] == "update_edit_ru"
     msg.answer.assert_awaited()
+
+
+def _durable_bot(tmp_path):
+    bot, tb = _make_bot()
+    source = tmp_path / "src" / "telegram_bot.py"
+    source.parent.mkdir()
+    source.write_text("old\n", encoding="utf-8")
+    bot.update_cache = tb.UpdateCache(tmp_path)
+    bot.update_cache.prepare()
+    source.write_text("new\n", encoding="utf-8")
+    pending = bot.update_cache.prepare()
+    pending["status"] = "review"
+    pending["notes"] = {"ru": "Первое", "en": "First"}
+    bot.update_cache.update(pending)
+    bot.pending_update_changelogs = dict(pending["notes"])
+    bot.update_broadcast_lock = asyncio.Lock()
+    bot.update_check_lock = asyncio.Lock()
+    bot._has_consent = lambda user_id: user_id in (42, 7)
+    cls = tb.TelegramTherapistBot
+    bot._process_update_broadcast = cls._process_update_broadcast.__get__(bot, cls)
+    bot._resume_update_broadcast = cls._resume_update_broadcast.__get__(bot, cls)
+    bot._check_and_notify_updates = cls._check_and_notify_updates.__get__(bot, cls)
+    return bot
+
+
+@pytest.mark.asyncio
+async def test_edits_and_preview_failure_survive_restart(tmp_path):
+    bot = _durable_bot(tmp_path)
+    bot.user_states[42] = "update_edit_ru"
+    await bot._handle_update_edit_input(_msg(), "update_edit_ru", "Изменено")
+    assert bot.update_cache.pending()["notes"]["ru"] == "Изменено"
+    bot.send_long_message.side_effect = RuntimeError("Telegram unavailable")
+    assert await bot._check_and_notify_updates(delay=False) == "error"
+    assert bot.update_cache.pending()["notes"]["ru"] == "Изменено"
+    bot.send_long_message.side_effect = None
+    assert await bot._check_and_notify_updates(delay=False) == "review"
+    assert bot.pending_update_changelogs["ru"] == "Изменено"
+
+
+@pytest.mark.asyncio
+async def test_partial_broadcast_retries_only_failed_users(tmp_path):
+    bot = _durable_bot(tmp_path)
+    attempts = []
+
+    async def send(user_id, *args, **kwargs):
+        attempts.append(user_id)
+        if user_id == 7 and attempts.count(7) == 1:
+            raise RuntimeError("temporary failure")
+
+    bot.send_long_message.side_effect = send
+    await bot._process_update_broadcast()
+    pending = bot.update_cache.pending()
+    assert pending["status"] == "sending"
+    assert pending["recipients"]["42"]["status"] == "sent"
+    assert pending["recipients"]["7"]["status"] == "failed"
+    assert await bot._check_and_notify_updates(delay=False) == "sending"
+    assert bot.update_cache.pending() is None
+    # 42 also receives the admin report; count actual broadcasts by arguments separately.
+    sends_to_7 = [call for call in bot.send_long_message.await_args_list if call.args[0] == 7]
+    assert len(sends_to_7) == 2
+
+
+@pytest.mark.asyncio
+async def test_skip_resolves_only_frozen_snapshot(tmp_path):
+    bot = _durable_bot(tmp_path)
+    (tmp_path / "src" / "telegram_bot.py").write_text("newer\n", encoding="utf-8")
+    bot._check_and_notify_updates = AsyncMock()
+    await bot._handle_update_confirm_input(_msg(), "нет")
+    assert bot.update_cache.pending() is None
+    assert bot.update_cache.prepare()["paths"] == ["src/telegram_bot.py"]
+
+
+@pytest.mark.asyncio
+async def test_revoked_consent_is_skipped_on_retry(tmp_path):
+    bot = _durable_bot(tmp_path)
+    async def send(user_id, *args, **kwargs):
+        if user_id == 7:
+            raise RuntimeError("temporary failure")
+    bot.send_long_message.side_effect = send
+    await bot._process_update_broadcast()
+    bot._has_consent = lambda user_id: user_id == 42
+    bot._check_and_notify_updates = AsyncMock()
+    bot.send_long_message.reset_mock()
+    await bot._process_update_broadcast()
+    assert bot.update_cache.pending() is None
+    assert all(call.args[0] != 7 for call in bot.send_long_message.await_args_list)

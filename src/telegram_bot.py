@@ -160,7 +160,7 @@ from therapist_bot import ExistentialTherapistBot, Message
 from lang_utils import detect_language
 from i18n import t
 from privacy import ConsentMiddleware, has_consent, show_consent
-from code_reviewer import check_and_generate_changelog, save_current_hashes
+from code_reviewer import UpdateCache
 
 
 DEFAULT_LLM_MODEL = "deepseek-v4.1-flash"
@@ -227,7 +227,6 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 # Add workspace root so `app` package is importable when launched via run_telegram.py
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from init_code_cache import init_cache
 
 # Default language when nothing is detected or user's Telegram locale is unsupported
 DEFAULT_LANG = os.getenv("DEFAULT_LANG", "en")
@@ -333,6 +332,9 @@ class TelegramTherapistBot:
         
         # ID администратора для фидбека (безопасный парсинг без хардкода чужого ID и без падения на строке)
         self.admin_id = _parse_admin_id(os.getenv("ADMIN_ID"))
+        self.update_cache = UpdateCache(Path(__file__).parent.parent)
+        self.update_check_lock = asyncio.Lock()
+        self.update_broadcast_lock = asyncio.Lock()
 
         # Регистрируем хендлеры
         
@@ -638,6 +640,16 @@ class TelegramTherapistBot:
         @self.dp.message(Command("help"))
         async def cmd_help(message: types.Message):
             await self._handle_help(message)
+
+        @self.dp.message(Command("updates"))
+        async def cmd_updates(message: types.Message):
+            if message.from_user.id != self.admin_id or not self.admin_id:
+                return
+            result = await self._check_and_notify_updates(delay=False, retry_generation=True)
+            if result == "idle":
+                await message.answer("Нет ожидающих обновлений или изменений.")
+            elif result == "error":
+                await message.answer("Не удалось проверить обновления. Подробности в журнале сервиса.")
 
         @self.dp.message(Command("askprob"))
         async def cmd_askprob(message: types.Message):
@@ -1275,10 +1287,23 @@ class TelegramTherapistBot:
                 return html.escape(text[:preview_limit]) + "..."
             return safe
 
+        cache = getattr(self, "update_cache", None)
+        pending = cache.pending() if isinstance(cache, UpdateCache) else None
+        details = []
+        if pending:
+            paths = pending.get("paths", [])
+            details = [
+                f"Изменено файлов: <b>{len(paths)}</b>",
+                html.escape(", ".join(paths[:12])) + (" …" if len(paths) > 12 else ""),
+                html.escape(pending.get("reason", "")),
+                "",
+            ]
+        eligible = sum(1 for user_id in self.user_langs if self._has_consent(user_id))
         return "\n".join([
             "📋 <b>Предпросмотр обновления</b>",
             "",
-            f"Получателей: <b>{len(self.user_langs)}</b>",
+            f"Получателей с согласием: <b>{eligible}</b>",
+            *details,
             "",
             "<b>RU:</b>",
             _clip(changelog_ru),
@@ -1289,7 +1314,7 @@ class TelegramTherapistBot:
             "Отправить?",
             "• <b>да</b> — разослать как есть",
             "• <b>править</b> — отредактировать RU, затем EN",
-            "• <b>нет</b> — отменить рассылку",
+            "• <b>нет</b> — пропустить это обновление",
         ])
 
     async def _send_update_preview(self, chat_id: int, changelogs: dict) -> None:
@@ -1334,11 +1359,17 @@ class TelegramTherapistBot:
         user_id = message.from_user.id
         choice = (text or "").strip().lower()
 
+        cache = getattr(self, "update_cache", None)
+        if isinstance(cache, UpdateCache):
+            pending = cache.pending()
+            if pending and pending["status"] == "sending":
+                await message.answer("Рассылка уже подтверждена. Для повтора используйте /updates.")
+                return
         if choice in _UPDATE_CONFIRM_YES:
-            await message.answer(
-                "✅ Начинаю рассылку обновлений...",
-                reply_markup=get_main_keyboard(self.user_langs.get(user_id, DEFAULT_LANG)),
-            )
+            changelogs = getattr(self, "pending_update_changelogs", {})
+            if not changelogs.get("ru") or not changelogs.get("en"):
+                await message.answer("Сначала заполните RU и EN через «править».")
+                return
             await self._process_update_broadcast()
             return
 
@@ -1347,11 +1378,20 @@ class TelegramTherapistBot:
             return
 
         if choice in _UPDATE_CONFIRM_NO:
+            cache = getattr(self, "update_cache", None)
+            resolved = False
+            if isinstance(cache, UpdateCache):
+                pending = cache.pending()
+                if pending and pending["status"] == "review":
+                    cache.resolve(pending)
+                    resolved = True
             self._clear_pending_update(user_id)
             await message.answer(
-                "❌ Рассылка обновлений отменена",
+                "❌ Обновление пропущено",
                 reply_markup=get_main_keyboard(self.user_langs.get(user_id, DEFAULT_LANG)),
             )
+            if resolved:
+                asyncio.create_task(self._check_and_notify_updates(delay=False))
             return
 
         await message.answer(
@@ -1388,6 +1428,12 @@ class TelegramTherapistBot:
 
         if state == "update_edit_ru":
             self.pending_update_changelogs["ru"] = edited
+            cache = getattr(self, "update_cache", None)
+            if isinstance(cache, UpdateCache):
+                pending = cache.pending()
+                if pending and pending["status"] == "review":
+                    pending["notes"]["ru"] = edited
+                    cache.update(pending)
             self.user_states[user_id] = "update_edit_en"
             current_en = self.pending_update_changelogs.get("en") or "—"
             await message.answer(
@@ -1403,85 +1449,74 @@ class TelegramTherapistBot:
 
         # update_edit_en
         self.pending_update_changelogs["en"] = edited
+        cache = getattr(self, "update_cache", None)
+        if isinstance(cache, UpdateCache):
+            pending = cache.pending()
+            if pending and pending["status"] == "review":
+                pending["notes"]["en"] = edited
+                cache.update(pending)
         await message.answer("✅ EN сохранён. Обновлённый предпросмотр:")
         await self._send_update_preview(user_id, self.pending_update_changelogs)
 
     async def _process_update_broadcast(self):
         """Выполнение рассылки обновлений после подтверждения админа."""
-        if not hasattr(self, 'pending_update_changelogs'):
-            return
+        cache = self.update_cache
+        async with self.update_broadcast_lock:
+            pending = cache.pending()
+            if not pending or pending["status"] not in ("review", "sending"):
+                return
+            if pending["status"] == "review":
+                if not pending["notes"].get("ru") or not pending["notes"].get("en"):
+                    return
+                pending["recipients"] = {
+                    str(user_id): {"status": "pending", "lang": self.user_langs.get(user_id, DEFAULT_LANG)}
+                    for user_id in self.user_langs if self._has_consent(user_id)
+                }
+                pending["status"] = "sending"
+                cache.update(pending)
+            await self._resume_update_broadcast(pending)
 
-        changelogs = self.pending_update_changelogs
-        del self.pending_update_changelogs
-        if self.user_states.get(self.admin_id, "").startswith("update_"):
-            self.user_states[self.admin_id] = "chat"
-
-        # Статистика
+    async def _resume_update_broadcast(self, pending):
+        cache = self.update_cache
+        changelogs = pending["notes"]
         sent_count = 0
-        failed_count = 0
         failed_users = []
-
-        # Рассылка всем пользователям
-        for user_id in list(self.user_langs.keys()):
+        for user_key, recipient in pending["recipients"].items():
+            if recipient["status"] in ("sent", "skipped"):
+                continue
+            user_id = int(user_key)
             if not self._has_consent(user_id):
+                recipient["status"] = "skipped"
+                cache.update(pending)
                 continue
             try:
-                # Get user's preferred language
-                user_lang = self.user_langs.get(user_id, DEFAULT_LANG)
-
-                # Select appropriate changelog
-                if user_lang == "ru" and changelogs.get("ru"):
-                    changelog = changelogs["ru"]
-                elif user_lang == "en" and changelogs.get("en"):
-                    changelog = changelogs["en"]
-                else:
-                    # Fallback to available changelog
-                    changelog = changelogs.get("ru") or changelogs.get("en") or "Internal updates."
-
-                # Build localized message with header and footer
-                header = t(user_lang, "update_notification_header")
-                footer = t(user_lang, "update_notification_footer")
-                # Escape body so admin edits can't break HTML parse_mode
-                localized_changelog = f"{header}{html.escape(str(changelog))}{footer}"
-
-                await self.send_long_message(
-                    user_id,
-                    localized_changelog,
-                    parse_mode="HTML"
+                user_lang = recipient["lang"]
+                changelog = changelogs["ru" if user_lang == "ru" else "en"]
+                localized = (
+                    t(user_lang, "update_notification_header")
+                    + html.escape(str(changelog))
+                    + t(user_lang, "update_notification_footer")
                 )
+                await self.send_long_message(user_id, localized, parse_mode="HTML")
+                recipient["status"] = "sent"
+                cache.update(pending)
                 sent_count += 1
+            except Exception as exc:
+                recipient["status"] = "failed"
+                cache.update(pending)
+                failed_users.append(user_key)
+                print(f"[UPDATE BROADCAST] Delivery failed: {type(exc).__name__}")
 
-            except Exception as e:
-                failed_count += 1
-                failed_users.append(str(user_id))
-                print(f"[UPDATE BROADCAST] Failed to send to {user_id}: {e}")
-
-        # Формируем отчёт
-        report_lines = [
-            f"✅ <b>Рассылка обновлений завершена</b>",
-            f"",
-            f"📤 Успешно отправлено: <b>{sent_count}</b>",
-            f"❌ Ошибок: <b>{failed_count}</b>",
-        ]
-
-        if failed_count > 0:
-            report_lines.append(f"")
-            report_lines.append(f"Не удалось отправить пользователям: {', '.join(failed_users[:10])}")
-            if len(failed_users) > 10:
-                report_lines.append(f"... и ещё {len(failed_users) - 10}")
-
-        # Логирование
-        print(f"[UPDATE BROADCAST] Admin sent update broadcast to {sent_count}/{len(self.user_langs)} users")
-
-        # Re-init cache after broadcast
-        init_cache()
-        # Отправляем отчёт админу
-        await self.send_long_message(
-            self.admin_id,
-            "\n".join(report_lines),
-            parse_mode="HTML",
-            reply_markup=get_main_keyboard(self.user_langs.get(self.admin_id, DEFAULT_LANG)),
+        if not failed_users:
+            cache.resolve(pending)
+            self._clear_pending_update(self.admin_id)
+            # A newer deployment may have arrived while this draft was pending.
+            asyncio.create_task(self._check_and_notify_updates(delay=False))
+        report = (
+            f"Рассылка: отправлено в этой попытке: {sent_count}; ошибок: {len(failed_users)}."
+            + (" Повторите /updates для оставшихся получателей." if failed_users else "")
         )
+        await self.send_long_message(self.admin_id, report)
     async def _handle_reset(self, message: types.Message):
         user_id = message.from_user.id
         async with self._get_user_lock(user_id):
@@ -1582,7 +1617,7 @@ class TelegramTherapistBot:
             del self.temp_associations[user_id]
         if user_id in self.filmframe_state:
             del self.filmframe_state[user_id]
-        # Cancel only drops the update draft when admin is inside that flow
+        # Cancellation leaves the persisted draft available via /updates.
         if user_id == self.admin_id and state.startswith("update_"):
             if hasattr(self, "pending_update_changelogs"):
                 del self.pending_update_changelogs
@@ -2680,52 +2715,38 @@ class TelegramTherapistBot:
         except Exception:
             await self._show_delivery_error(message, sent, t(lang, "error_llm"))
 
-    async def _check_and_notify_updates(self):
-        """Check for code updates and notify all active users."""
+    async def _check_and_notify_updates(self, delay=True, retry_generation=False):
+        """Restore a pending draft or check changed hashes without losing it."""
         try:
-            # Short delay so polling is fully connected before checking updates
-            await asyncio.sleep(2.0)
-            from pathlib import Path
-            project_root = Path(__file__).parent.parent
-            
-            print(f"[UPDATE CHECK] Starting update check...")
-            print(f"[UPDATE CHECK] Project root: {project_root}")
-            print(f"[UPDATE CHECK] Admin ID: {self.admin_id}")
-            print(f"[UPDATE CHECK] Users in memory: {len(self.user_langs)}")
-            
-            # Get a therapist instance for LLM calls
-            therapist = self._get_therapist(self.admin_id)
-            print(f"[UPDATE CHECK] Therapist initialized: {therapist is not None}")
-            
-            # Generate changelogs for both languages in worker threads (non-blocking)
-            print(f"[UPDATE CHECK] Generating changelogs (in background thread)...")
-            changelog_ru = await asyncio.to_thread(
-                check_and_generate_changelog, project_root, therapist, self.admin_id, "ru", False
-            )
-            changelog_en = await asyncio.to_thread(
-                check_and_generate_changelog, project_root, therapist, self.admin_id, "en", False
-            )
-
-            # Always refresh hash+snapshot baseline after a check.
-            # Otherwise technical-only diffs re-fire on every restart.
-            await asyncio.to_thread(save_current_hashes, project_root)
-
-            print(f"[UPDATE CHECK] Changelog RU: {'YES (' + str(len(changelog_ru)) + ' chars)' if changelog_ru else 'NO'}")
-            print(f"[UPDATE CHECK] Changelog EN: {'YES (' + str(len(changelog_en)) + ' chars)' if changelog_en else 'NO'}")
-            # Check if there's any changelog (None or empty string)
-            has_changelog = bool(changelog_ru or changelog_en)
-            if has_changelog:
-                await self._send_update_preview(
-                    self.admin_id,
-                    {"ru": changelog_ru or "", "en": changelog_en or ""},
-                )
-                print(f"[UPDATE CHECK] Admin confirmation requested for {len(self.user_langs)} users")
-            else:
-                print(f"[UPDATE CHECK] No changelogs to send, skipping notification")
-        except Exception as e:
-            print(f"[UPDATE CHECK] Failed to check/notify updates: {e}")
-            import traceback
-            traceback.print_exc()
+            if delay:
+                await asyncio.sleep(2.0)
+            if not self.admin_id:
+                print("[UPDATE CHECK] ADMIN_ID is not configured; leaving cache unchanged")
+                return
+            async with self.update_check_lock:
+                pending = self.update_cache.prepare()
+                if not pending:
+                    print("[UPDATE CHECK] No changes detected")
+                    return "idle"
+                if pending["status"] == "sending":
+                    await self._process_update_broadcast()
+                    return "sending"
+                if pending["status"] == "generating" or (
+                    retry_generation and pending.get("reason", "").startswith("Не удалось")
+                    and not any(pending["notes"].values())
+                ):
+                    therapist = self._get_therapist(self.admin_id)
+                    pending = await asyncio.to_thread(self.update_cache.generate, therapist, pending)
+                if not pending:
+                    return "idle"
+                if pending["status"] == "sending":
+                    await self._process_update_broadcast()
+                    return "sending"
+                await self._send_update_preview(self.admin_id, pending["notes"])
+                return "review"
+        except Exception as exc:
+            print(f"[UPDATE CHECK] Failed: {type(exc).__name__}")
+            return "error"
 
 
 

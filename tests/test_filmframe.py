@@ -226,6 +226,39 @@ class TestSceneBuilder:
 
         result = sb.apply_edit("A bus at morning", "make it evening instead")
         assert "evening" in result["preview"].lower() or "golden" in result["preview"].lower()
+        messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+        assert "A bus at morning" in messages[1]["content"]
+        assert "make it evening instead" in messages[1]["content"]
+        assert "VISUAL DIRECTIONS" in messages[0]["content"]
+
+    @pytest.mark.parametrize(("description", "scene"), [
+        ("Мне спокойно, я никуда не спешу.", "A folded towel on a sunlit kitchen chair."),
+        ("Тревожусь и жду ответа.", "A red plastic bag catches on a railing in harsh fluorescent light."),
+        ("Я рад и полон сил!", "Bright paper streamers tumble across a crowded pavement."),
+        ("Я устал после долгой недели.", "A half-unpacked grocery bag rests on a scuffed counter."),
+        ("Я растерян и не знаю, что делать.", "A reflected doorway appears upside down in a puddle."),
+        ("Чувствую себя чужим среди людей.", "A single balloon floats motionless beneath a crowded bus ceiling."),
+    ])
+    def test_emotional_messages_reach_scene_builder_and_image_prompt(self, description, scene):
+        """Exercise prompt assembly with illustrative responses, not a live LLM evaluation."""
+        import json
+        from app.features.filmframe.scene_builder import SceneBuilder
+        from app.features.filmframe.config import SCENE_BUILDER_SYSTEM_PROMPT
+
+        sb = SceneBuilder(api_key="test", api_base="https://test.com")
+        sb.client = MagicMock()
+        sb.client.chat.completions.create.return_value.choices = [
+            MagicMock(message=MagicMock(content=json.dumps({"preview": "Кадр.", "scene": scene})))
+        ]
+        result = sb.build_scene(description)
+        request = sb.client.chat.completions.create.call_args.kwargs
+        assert request["messages"] == [
+            {"role": "system", "content": SCENE_BUILDER_SYSTEM_PROMPT},
+            {"role": "user", "content": description},
+        ]
+        assert result["scene"] == scene
+        assert f"Scene: {scene}" in result["image_prompt"]
+        assert "analog film" in result["image_prompt"]
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +288,47 @@ class TestImageClient:
         assert result["b64_json"] is not None
         assert result["latency_ms"] >= 0
         assert result["seed"] == 12345
+        assert mock_openai.images.generate.call_args.kwargs["extra_body"] == {"watermark": False}
+
+    @pytest.mark.asyncio
+    async def test_watermark_flag_is_sent_in_sdk_request_body(self):
+        import json
+        import httpx
+        from openai import OpenAI
+        from app.features.filmframe.image_client import ImageClient
+
+        requests = []
+
+        def respond(request):
+            requests.append(request)
+            return httpx.Response(200, json={"created": 1, "data": [{"b64_json": "aW1hZ2U="}]})
+
+        client = ImageClient(api_key="test", api_base="https://test.com/v1")
+        client.model = "seedream-5-0-pro-260628"
+        client.client = OpenAI(
+            api_key="test", base_url="https://test.com/v1",
+            http_client=httpx.Client(transport=httpx.MockTransport(respond)),
+        )
+        result = await client.generate_image("test scene")
+        assert result["b64_json"] == "aW1hZ2U="
+        assert len(requests) == 1
+        body = json.loads(requests[0].content)
+        assert body["watermark"] is False
+        assert body["model"] == client.model
+        assert body["n"] == 1
+        assert body["size"] == "1024x1024"
+        assert body["response_format"] == "b64_json"
+
+    @pytest.mark.asyncio
+    async def test_other_models_do_not_receive_provider_specific_flag(self):
+        from app.features.filmframe.image_client import ImageClient
+
+        mock_openai = MagicMock()
+        with patch("app.features.filmframe.image_client.OpenAI", return_value=mock_openai):
+            client = ImageClient(api_key="test", api_base="https://test.com")
+            client.model = "other-image-model"
+            await client.generate_image("test scene")
+        assert "extra_body" not in mock_openai.images.generate.call_args.kwargs
 
     @pytest.mark.asyncio
     async def test_generate_image_timeout(self):
@@ -366,19 +440,25 @@ class TestConfig:
         assert prompt.startswith("Amateur 35mm")
         assert "Scene: Two melting popsicles" in prompt
         assert prompt.index("Amateur 35mm") < prompt.index("Scene:")
-        assert prompt.index("Scene:") < prompt.index("Handheld eye-level")
+        assert prompt.index("Scene:") < prompt.index("Candid, imperfect framing")
         assert "No ultra-sharp" in prompt
-        assert "Portra 400" in prompt
+        assert "analog film" in prompt
 
     def test_scene_builder_prompt_has_rules(self):
         from app.features.filmframe.config import SCENE_BUILDER_SYSTEM_PROMPT
         assert "CRITICAL RULES" in SCENE_BUILDER_SYSTEM_PROMPT
         assert "emotional labels" in SCENE_BUILDER_SYSTEM_PROMPT.lower()
-        assert "cliché" in SCENE_BUILDER_SYSTEM_PROMPT.lower()
+        assert "formulaic associations" in SCENE_BUILDER_SYSTEM_PROMPT.lower()
         assert "snapshot" in SCENE_BUILDER_SYSTEM_PROMPT.lower()
         lower = SCENE_BUILDER_SYSTEM_PROMPT.lower()
-        assert "one main subject" in lower
-        assert "close or medium" in lower
+        assert "roughly 60%" in lower
+        assert "30% expressive" in lower
+        assert "10% soft magical" in lower
+        assert "not a random assignment" in lower
+        assert "diagnosing" in lower
+        assert "not requirements" in lower
+        assert "sadness = rain" in lower
+        assert "joy = sunshine" in lower
 
     def test_default_model(self):
         from app.features.filmframe.config import FILM_FRAME_MODEL
@@ -581,6 +661,7 @@ class TestHandlers:
         photo_arg = message.answer_photo.await_args.args[0]
         from aiogram.types import BufferedInputFile
         assert isinstance(photo_arg, BufferedInputFile)
+        assert photo_arg.data == b"fake-png-bytes"
         # Success must restore keyboard on the photo, not send cancel copy.
         assert message.answer_photo.await_args.kwargs.get("reply_markup") == "main-kb"
         cancel_mock.assert_not_awaited()
@@ -593,6 +674,38 @@ class TestHandlers:
             text = call.args[0] if call.args else ""
             assert "отменено" not in str(text).lower()
             assert "cancelled" not in str(text).lower()
+
+    @pytest.mark.asyncio
+    async def test_do_generate_sends_provider_url_unchanged(self):
+        from app.features.filmframe import handlers as h
+
+        bot = MagicMock()
+        bot.user_langs = {1: "en"}
+        bot.user_states = {1: "ff_preview"}
+        bot.message_queue = {1: [1.0]}
+        bot.filmframe_state = {1: {"image_prompt": "prompt", "confirmed": False}}
+        bot.bot.send_chat_action = AsyncMock()
+        message = MagicMock()
+        message.from_user.id = 1
+        message.chat.id = 1
+        message.answer = AsyncMock()
+        message.answer_photo = AsyncMock()
+        client = MagicMock()
+        client.generate_image = AsyncMock(return_value={
+            "url": "https://example.com/image.png",
+            "b64_json": None, "seed": None, "latency_ms": 12,
+        })
+
+        with patch.object(h, "ImageClient", return_value=client), \
+             patch.object(h, "record_usage") as record_usage, \
+             patch.object(h, "log_run"), \
+             patch("src.telegram_bot.get_main_keyboard", return_value="main-kb"):
+            await h._do_generate(bot, message)
+
+        client.generate_image.assert_awaited_once_with("prompt")
+        assert message.answer_photo.await_args.args[0] == "https://example.com/image.png"
+        record_usage.assert_called_once()
+        assert bot.user_states[1] == "chat"
 
     @pytest.mark.asyncio
     async def test_do_generate_error_also_skips_cancel_copy(self):

@@ -1,112 +1,41 @@
 #!/usr/bin/env python3
-"""
-Check current code hash cache status.
-Shows which files are tracked and whether cache exists.
-
-Usage:
-    python3 scripts/check_code_cache.py
-    # or from scripts directory:
-    cd scripts && python3 check_code_cache.py
-"""
+"""Read-only inspection of the bot's existing code hash cache."""
 
 import sys
-import json
-import hashlib
 from pathlib import Path
 
-# Setup paths - works from any directory
-script_dir = Path(__file__).parent.resolve()
-project_root = script_dir.parent.resolve()
-
-# Files to track (keep in sync with src/code_reviewer.py)
-TRACKED_FILES = [
-    "src/telegram_bot.py",
-    "src/therapist_bot.py",
-    "src/i18n.py",
-    "src/rag.py",
-    "src/lang_utils.py",
-    "src/code_reviewer.py",
-]
-
-
-def calculate_file_hash(file_path: Path) -> str:
-    """Calculate SHA256 hash of file contents."""
-    try:
-        with open(file_path, 'rb') as f:
-            return hashlib.sha256(f.read()).hexdigest()[:16]
-    except Exception:
-        return ""
+project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(project_root / "src"))
+from code_reviewer import UpdateCache
 
 
 def check_cache():
-    """Check current cache status."""
-    data_dir = project_root / "data"
-    hash_file = data_dir / "code_hashes.json"
-    backup_dir = data_dir / "code_backup"
-    
-    print("=" * 60)
-    print("СТАТУС КЭША КОДА")
-    print("=" * 60)
-    print(f"Корень проекта: {project_root}")
-    print(f"Директория данных: {data_dir}")
-    
-    # Check if backup directory exists
-    has_backups = backup_dir.exists() and any(backup_dir.iterdir())
-    
-    # Check if cache file exists
-    if not hash_file.exists():
-        print(f"\nОШИБКА: Файл кэша НЕ НАЙДЕН: {hash_file}")
-        if has_backups:
-            print(f"OK: Но резервные копии существуют в: {backup_dir}")
-            print("   (Запустите init для обновления кэша хешей)")
-        else:
-            print("\nВНИМАНИЕ: Кэш и резервные копии не найдены!")
-            print("   Запустите: python3 scripts/init_code_cache.py")
+    cache = UpdateCache(project_root)
+    if not cache.path.exists():
+        print(f"Кэш не найден: {cache.path}. При первом запуске будет создана база.")
         return 1
-    
-    # Load stored hashes
-    with open(hash_file, 'r', encoding='utf-8') as f:
-        stored_hashes = json.load(f)
-    
-    print(f"\nФайл кэша: {hash_file}")
-    print(f"   Отслеживаемые файлы: {len(TRACKED_FILES)}")
-    print(f"   Файлов в кэше: {len(stored_hashes)}")
-    if has_backups:
-        print(f"   Резервные копии: {backup_dir}")
-    
-    # Compare current vs stored
-    print("\n" + "-" * 60)
-    print("СТАТУС ФАЙЛОВ:")
-    print("-" * 60)
-    
-    changes_detected = False
-    for rel_path in TRACKED_FILES:
-        file_path = project_root / rel_path
-        current_hash = calculate_file_hash(file_path) if file_path.exists() else "N/A"
-        stored_hash = stored_hashes.get(rel_path, "НЕТ В КЭШЕ")
-        
-        if current_hash == stored_hash:
-            status = "OK"
-        elif stored_hash == "НЕТ В КЭШЕ":
-            status = "НОВЫЙ"
-            changes_detected = True
-        else:
-            status = "ИЗМЕНЕН"
-            changes_detected = True
-        
-        print(f"{status} {rel_path}")
-        print(f"      Текущий: {current_hash}")
-        print(f"      В кэше:  {stored_hash}")
-        print()
-    
-    print("-" * 60)
-    if changes_detected:
-        print("ВНИМАНИЕ: Обнаружены изменения! При следующем запуске БУДЕТ показано сообщение 'бот обновлен'")
-    else:
-        print("OK: Все файлы совпадают с кэшем. При следующем запуске сообщение НЕ будет показано")
-    print("-" * 60)
-    
-    return 0 if not changes_detected else 1
+    try:
+        data = cache._read()
+        current, _ = cache._capture()
+        baseline = {key: value for key, value in data.items() if isinstance(value, str)}
+        pending = data.get("_update_state", {}).get("pending")
+        print(f"Файл кэша: {cache.path}")
+        if pending:
+            print(f"Черновик: {pending['id'][:8]}, состояние: {pending['status']}")
+            print(f"Файлов в черновике: {len(pending['paths'])}")
+        elif "_update_state" not in data:
+            print("Устаревший формат: новые отслеживаемые файлы получат базу при запуске.")
+        changed = [
+            path for path in sorted(set(baseline) | set(current))
+            if baseline.get(path) != current.get(path)
+        ]
+        for path in changed:
+            print(f"ИЗМЕНЕН: {path}")
+        print(f"Изменений относительно базы: {len(changed)}")
+        return 1 if changed or pending else 0
+    except (OSError, ValueError, UnicodeError) as exc:
+        print(f"Не удалось прочитать кэш: {type(exc).__name__}")
+        return 1
 
 
 if __name__ == "__main__":

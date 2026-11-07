@@ -40,12 +40,20 @@ class ImageClient:
         start = asyncio.get_event_loop().time()
 
         def _call():
+            # CometAPI documents this switch for Seedream 5.0 Pro. Do not send
+            # provider-specific fields to other configurable image models.
+            extra = (
+                {"extra_body": {"watermark": False}}
+                if self.model == "seedream-5-0-pro-260628"
+                else {}
+            )
             return self.client.images.generate(
                 model=self.model,
                 prompt=prompt,
                 n=1,
                 size=size,
                 response_format="b64_json",
+                **extra,
             )
 
         last_exc: Optional[Exception] = None

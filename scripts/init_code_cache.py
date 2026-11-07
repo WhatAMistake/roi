@@ -59,6 +59,12 @@ def init_cache():
     """Initialize code hash cache with current file states."""
     data_dir = project_root / "data"
     hash_file = data_dir / "code_hashes.json"
+    if hash_file.exists():
+        with open(hash_file, encoding="utf-8") as f:
+            existing = json.load(f)
+        if isinstance(existing, dict) and "_update_state" in existing:
+            print("Cache contains durable update state; refusing to overwrite it.")
+            return 1
     
     # Ensure data directory exists
     data_dir.mkdir(parents=True, exist_ok=True)

@@ -90,11 +90,17 @@ def load_stored_hashes(data_dir: Path) -> Dict[str, str]:
 def save_hashes(data_dir: Path, hashes: Dict[str, str]) -> None:
     hash_file = data_dir / "code_hashes.json"
     try:
+        if hash_file.exists():
+            with open(hash_file, encoding="utf-8") as f:
+                existing = json.load(f)
+            if isinstance(existing, dict) and "_update_state" in existing:
+                raise RuntimeError("Refusing to overwrite durable update state")
         data_dir.mkdir(parents=True, exist_ok=True)
         with open(hash_file, 'w', encoding='utf-8') as f:
             json.dump(hashes, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"Failed to save hashes: {e}")
+        raise
 
 def get_changed_files(project_root: Path, stored_hashes: Dict[str, str]) -> List[Tuple[str, str, str]]:
     changed = []
@@ -145,6 +151,13 @@ def load_therapist_bot():
 def test_changelog(lang="ru", save_hashes=False):
     """Test changelog generation."""
     print_header(f"CHANGELOG TEST [{lang.upper()}]")
+    # This legacy script sends whole files and does not use the durable flow.
+    # Do not spend tokens or overwrite the new cache with misleading results.
+    existing = load_stored_hashes(data_dir)
+    if "_update_state" in existing:
+        print_error("Legacy generator is incompatible with the durable update cache.")
+        print_info("Use /updates in the admin chat or scripts/check_code_cache.py.")
+        return 1
     
     # Check environment
     print_section("Checking environment...")
@@ -183,7 +196,7 @@ def test_changelog(lang="ru", save_hashes=False):
     if not changed_files:
         print_info("No code changes detected")
         print_info("Next restart will NOT show 'bot updated' message")
-        print_info("To force changelog, modify any tracked file or delete data/code_hashes.json")
+        print_info("Do not delete the hash cache; inspect it with scripts/check_code_cache.py")
         return 0
     
     print_success(f"Found {len(changed_files)} changed file(s):")
