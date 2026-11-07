@@ -1,4 +1,5 @@
 import base64
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -285,6 +286,9 @@ def test_probe_live_makes_one_task_and_reports_submission(monkeypatch, tmp_path,
     monkeypatch.setattr(probe, "reference_data_uri", lambda *a, **k: "data:audio/mp3;base64,private")
     def clone(*args, **kwargs):
         kwargs["observer"](200)
+        kwargs["task_observer"]("private-task-123")
+        kwargs["poll_observer"]("RUNNING", 200)
+        kwargs["poll_observer"]("SUCCEEDED", 200)
         kwargs["observer"](200)
         return 1.25
     mock_clone = MagicMock(side_effect=clone)
@@ -294,5 +298,180 @@ def test_probe_live_makes_one_task_and_reports_submission(monkeypatch, tmp_path,
     mock_clone.assert_called_once()
     output = capsys.readouterr().out
     assert "submission_http=200" in output
+    assert "last_task_status=SUCCEEDED" in output
+    assert "last_poll_http=200" in output
+    assert "wait_seconds=" in output
     assert "valid_mp3" in output
     assert "private" not in output
+    assert probe.read_task() == "private-task-123"
+
+
+def test_resume_downloads_existing_success_without_post(configured, monkeypatch):
+    session, _ = fake_session(monkeypatch)
+    monkeypatch.delenv("TTS_REFERENCE_PATH")
+    monkeypatch.setenv("TTS_CLONE_VERIFIED", "0")
+    monkeypatch.setattr(tts, "validate_audio", lambda *args, **kwargs: 1.25)
+    output = configured / "resume.mp3"
+    observed = []
+    duration = tts.resume_clone_speech("existing-id", output, poll_observer=lambda s, h: observed.append((s, h)))
+    assert duration == 1.25
+    assert output.read_bytes() == b"audio"
+    session.post.assert_not_called()
+    session.get.assert_called_once()
+    assert ("SUCCEEDED", 200) in observed
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, duration):
+        self.now += duration
+
+
+@pytest.mark.parametrize("timeout,expected_polls", [(3, 3), (8, 8)])
+def test_resume_polls_until_configured_deadline(configured, monkeypatch, timeout, expected_polls):
+    clock = FakeClock()
+    monkeypatch.setattr(tts, "time", clock)
+    monkeypatch.setenv("TTS_CLONE_TIMEOUT", str(timeout))
+    session, _ = fake_session(monkeypatch, task=Response(body={"status": "RUNNING"}))
+    observed = []
+    with pytest.raises(tts.CloneError, match="timeout"):
+        tts.resume_clone_speech("existing-id", configured / "response.mp3",
+                                poll_observer=lambda status, http: observed.append((status, http)))
+    assert clock.now == timeout
+    assert session.get.call_count == expected_polls
+    assert observed[-1] == ("RUNNING", 200)
+    assert all(0 < call.kwargs["timeout"] <= timeout for call in session.get.call_args_list)
+    session.post.assert_not_called()
+
+
+def test_live_saves_task_before_first_poll_and_runs_past_five(configured, monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(tts, "time", clock)
+    monkeypatch.setenv("TTS_CLONE_TIMEOUT", "12")
+    session, _ = fake_session(monkeypatch)
+    monkeypatch.setattr(tts, "validate_audio", lambda *args, **kwargs: 1.0)
+    saved = []
+    def get(*args, **kwargs):
+        assert saved == ["task-1"]
+        if session.get.call_count <= 6:
+            return Response(body={"status": "PENDING"})
+        return Response(body={"status": "SUCCEEDED", "output": ["https://example.com/output.mp3"]})
+    session.get.side_effect = get
+    assert tts.clone_speech("Hello", configured / "output.mp3", task_observer=saved.append) == 1.0
+    assert session.get.call_count == 7
+    assert clock.now == 6
+    assert session.post.call_count == 1
+
+
+@pytest.mark.parametrize("task_status", ["FAILED", "CANCELLED"])
+def test_resume_terminal_failure_does_not_download(configured, monkeypatch, task_status):
+    session, _ = fake_session(monkeypatch, task=Response(body={"status": task_status}))
+    seen = []
+    with pytest.raises(tts.CloneError, match="task_failed"):
+        tts.resume_clone_speech("existing-id", configured / "result.mp3",
+                                poll_observer=lambda s, h: seen.append((s, h)))
+    assert seen[-1] == (task_status, 200)
+    session.post.assert_not_called()
+    session.stream.assert_not_called()
+
+
+def test_probe_resume_only_uses_existing_task(monkeypatch, tmp_path, capsys):
+    import importlib.util
+    script = Path(__file__).resolve().parent.parent / "scripts" / "probe_tts_clone.py"
+    spec = importlib.util.spec_from_file_location("probe_resume", script)
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    monkeypatch.setattr(probe, "ROOT", tmp_path)
+    monkeypatch.setattr(probe, "load_dotenv", lambda *a, **k: None)
+    with probe.new_task_file() as file:
+        probe.save_task(file, "private-task-123")
+    if os.name != "nt":
+        assert (tmp_path / "temp_audio" / ".tts_probe").stat().st_mode & 0o777 == 0o700
+        assert (tmp_path / "temp_audio" / ".tts_probe" / "task.json").stat().st_mode & 0o777 == 0o600
+    monkeypatch.setattr(probe, "resume_configuration", lambda: ("key", 12))
+    def resume(task_id, output, **kwargs):
+        assert task_id == "private-task-123"
+        kwargs["observer"](200)
+        kwargs["poll_observer"]("RUNNING", 200)
+        raise tts.CloneError("timeout")
+    mock_resume = MagicMock(side_effect=resume)
+    mock_clone = MagicMock()
+    monkeypatch.setattr(probe, "resume_clone_speech", mock_resume)
+    monkeypatch.setattr(probe, "clone_speech", mock_clone)
+    monkeypatch.setattr(sys, "argv", ["probe_tts_clone.py", "--resume"])
+    assert probe.main() == 1
+    mock_clone.assert_not_called()
+    mock_resume.assert_called_once()
+    output = capsys.readouterr().out
+    assert "last_task_status=RUNNING" in output
+    assert "last_poll_http=200" in output
+    assert "result=timeout" in output
+    assert "private-task-123" not in output
+
+
+def test_task_file_cannot_be_overwritten(monkeypatch, tmp_path):
+    import importlib.util
+    script = Path(__file__).resolve().parent.parent / "scripts" / "probe_tts_clone.py"
+    spec = importlib.util.spec_from_file_location("probe_storage", script)
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    monkeypatch.setattr(probe, "ROOT", tmp_path)
+    with probe.new_task_file() as file:
+        probe.save_task(file, "existing-id")
+    with pytest.raises(tts.CloneError, match="task_file_exists"):
+        probe.new_task_file()
+    assert probe.read_task() == "existing-id"
+
+
+def test_resume_reports_success_status_even_when_tools_missing(configured, monkeypatch):
+    session, _ = fake_session(monkeypatch)
+    monkeypatch.setattr(tts.shutil, "which", lambda _: None)
+    seen = []
+    with pytest.raises(tts.CloneError, match="missing_audio_tools"):
+        tts.resume_clone_speech("existing-id", configured / "result.mp3",
+                                poll_observer=lambda s, h: seen.append((s, h)))
+    assert seen[-1] == ("SUCCEEDED", 200)
+    session.post.assert_not_called()
+    session.stream.assert_not_called()
+
+
+def test_resume_timeout_preserves_last_successful_poll_state(configured, monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(tts, "time", clock)
+    session, _ = fake_session(monkeypatch)
+    session.get.side_effect = [Response(body={"status": "PENDING"}),
+                               httpx.ReadTimeout("sensitive URL")]
+    seen = []
+    with pytest.raises(tts.CloneError, match="timeout"):
+        tts.resume_clone_speech("existing-id", configured / "result.mp3",
+                                poll_observer=lambda s, h: seen.append((s, h)))
+    assert seen[-1] == ("PENDING", 200)
+    session.post.assert_not_called()
+
+
+def test_import_task_id_is_private_and_makes_no_http(monkeypatch, tmp_path, capsys):
+    import importlib.util
+    script = Path(__file__).resolve().parent.parent / "scripts" / "probe_tts_clone.py"
+    spec = importlib.util.spec_from_file_location("probe_import", script)
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    monkeypatch.setattr(probe, "ROOT", tmp_path)
+    monkeypatch.setattr(probe, "load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr(probe.getpass, "getpass", lambda *a, **k: "private-task-123")
+    mock_clone = MagicMock()
+    mock_resume = MagicMock()
+    monkeypatch.setattr(probe, "clone_speech", mock_clone)
+    monkeypatch.setattr(probe, "resume_clone_speech", mock_resume)
+    monkeypatch.setattr(sys, "argv", ["probe_tts_clone.py", "--import-task-id"])
+    assert probe.main() == 0
+    assert probe.read_task() == "private-task-123"
+    mock_clone.assert_not_called()
+    mock_resume.assert_not_called()
+    output = capsys.readouterr().out
+    assert "HTTP=not_called" in output
+    assert "private-task-123" not in output

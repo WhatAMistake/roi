@@ -92,15 +92,28 @@ def configuration(api_key=None, require_verified=True):
         raise CloneError("missing_reference")
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         raise CloneError("missing_audio_tools")
+    timeout = clone_timeout()
+    if require_verified and os.getenv("TTS_CLONE_VERIFIED") != "1":
+        raise CloneError("not_verified")
+    return reference, timeout
+
+
+def clone_timeout():
     try:
         timeout = float(os.getenv("TTS_CLONE_TIMEOUT", "12"))
         if not math.isfinite(timeout) or not 0 < timeout <= 120:
             raise ValueError
+        return timeout
     except ValueError:
         raise CloneError("invalid_timeout") from None
-    if require_verified and os.getenv("TTS_CLONE_VERIFIED") != "1":
-        raise CloneError("not_verified")
-    return reference, timeout
+
+
+def resume_configuration(api_key=None):
+    """Resume requires neither the original reference nor the verification flag."""
+    key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("COMET_API_KEY")
+    if not key:
+        raise CloneError("missing_key")
+    return key, clone_timeout()
 
 
 def validate_audio(path, timeout=5):
@@ -198,86 +211,128 @@ def _public_https(url):
         return False
 
 
-def clone_speech(text, output_path, api_key=None, require_verified=True, observer=None):
-    """Submit exactly one generation task, then poll and download within a deadline."""
+def valid_task_id(task_id):
+    return isinstance(task_id, str) and bool(re.fullmatch(r"[A-Za-z0-9_-]{1,128}", task_id))
+
+
+def _remaining(deadline):
+    value = deadline - time.monotonic()
+    if value <= 0:
+        raise CloneError("timeout")
+    return value
+
+
+def _poll_and_download(session, key, task_id, output_path, deadline,
+                       observer=None, poll_observer=None):
+    """Poll until a terminal state or the common deadline, then validate the audio."""
+    headers = {"Authorization": "Bearer " + key}
+    first = True
+    while True:
+        if not first:
+            time.sleep(min(1, _remaining(deadline)))
+        first = False
+        response = session.get(BASE + "/runwayml/v1/tasks/" + quote(task_id),
+                               headers=headers, timeout=_remaining(deadline))
+        if observer:
+            observer(response.status_code)
+        if poll_observer:
+            # Record the HTTP result even when the provider returns an error.
+            poll_observer(None, response.status_code)
+        if response.status_code == 400:
+            try:
+                if response.json().get("code") == "task_not_exist":
+                    continue
+            except (ValueError, AttributeError):
+                pass
+        check_response(response)
+        task = response.json()
+        if not isinstance(task, dict):
+            raise CloneError("invalid_response", response.status_code)
+        status = task.get("status")
+        known = {"PENDING", "THROTTLED", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"}
+        status = status if isinstance(status, str) and status in known else "UNKNOWN"
+        if poll_observer:
+            poll_observer(status, response.status_code)
+        _remaining(deadline)
+        if status in ("FAILED", "CANCELLED"):
+            raise CloneError("task_failed", response.status_code, task.get("failureCode"))
+        if status == "SUCCEEDED":
+            break
+    outputs = task.get("output")
+    if not isinstance(outputs, list) or not outputs or not isinstance(outputs[0], str) or not _public_https(outputs[0]):
+        raise CloneError("invalid_output_url")
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        raise CloneError("missing_audio_tools")
+    with session.stream("GET", outputs[0], timeout=_remaining(deadline)) as audio:
+        if observer:
+            observer(audio.status_code)
+        if not 200 <= audio.status_code < 300:
+            raise CloneError(classify_status(audio.status_code), audio.status_code)
+        data = bytearray()
+        for chunk in audio.iter_bytes():
+            _remaining(deadline)
+            data.extend(chunk)
+            if len(data) > MAX_AUDIO_BYTES:
+                raise CloneError("invalid_audio")
+    if not data:
+        raise CloneError("invalid_audio")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "speech.mp3"
+        path.write_bytes(data)
+        duration = validate_audio(path, timeout=min(5, _remaining(deadline)))
+        _remaining(deadline)
+        Path(output_path).write_bytes(data)
+    return duration
+
+
+def clone_speech(text, output_path, api_key=None, require_verified=True, observer=None,
+                 task_observer=None, poll_observer=None):
+    """Submit exactly one task, persist its ID if requested, then poll."""
     reference, timeout = configuration(api_key, require_verified)
     key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("COMET_API_KEY")
     if not text or len(text) > 2048:
         raise CloneError("parameters")
     deadline = time.monotonic() + timeout
-
-    def remaining():
-        value = deadline - time.monotonic()
-        if value <= 0:
-            raise CloneError("timeout")
-        return value
-
-    def report(response):
-        if observer:
-            observer(response.status_code)
-        check_response(response)
-
     try:
-        audio_uri = reference_data_uri(reference, timeout=remaining())
+        audio_uri = reference_data_uri(reference, timeout=_remaining(deadline))
         with httpx.Client(follow_redirects=False, trust_env=False) as session:
-            headers = {"Authorization": "Bearer " + key}
             response = session.post(
-                BASE + "/runwayml/v1/text_to_speech", headers=headers,
+                BASE + "/runwayml/v1/text_to_speech",
+                headers={"Authorization": "Bearer " + key},
                 json={"model": "seed_audio", "promptText": text,
                       "voice": {"type": "reference-audio", "audioUri": audio_uri},
                       "outputFormat": "mp3"},
-                timeout=remaining(),
+                timeout=_remaining(deadline),
             )
-            report(response)
+            if observer:
+                observer(response.status_code)
+            check_response(response)
             task = response.json()
             task_id = task.get("id")
-            if not isinstance(task_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", task_id):
+            if not valid_task_id(task_id):
                 raise CloneError("invalid_response", response.status_code)
-            for attempt in range(5):
-                if task.get("status") == "SUCCEEDED":
-                    break
-                if task.get("status") in ("FAILED", "CANCELLED"):
-                    raise CloneError("task_failed", response.status_code, task.get("failureCode"))
-                if attempt:
-                    time.sleep(min(1, remaining()))
-                response = session.get(BASE + "/runwayml/v1/tasks/" + quote(task_id),
-                                       headers=headers, timeout=remaining())
-                if response.status_code == 400:
-                    try:
-                        if response.json().get("code") == "task_not_exist":
-                            if observer:
-                                observer(response.status_code)
-                            continue
-                    except (ValueError, AttributeError):
-                        pass
-                report(response)
-                task = response.json()
-            if task.get("status") != "SUCCEEDED":
-                raise CloneError("timeout")
-            outputs = task.get("output")
-            if not isinstance(outputs, list) or not outputs or not isinstance(outputs[0], str) or not _public_https(outputs[0]):
-                raise CloneError("invalid_output_url")
-            with session.stream("GET", outputs[0], timeout=remaining()) as audio:
-                if observer:
-                    observer(audio.status_code)
-                # Streaming bodies have not been read; do not parse error JSON.
-                if not 200 <= audio.status_code < 300:
-                    raise CloneError(classify_status(audio.status_code), audio.status_code)
-                data = bytearray()
-                for chunk in audio.iter_bytes():
-                    remaining()
-                    data.extend(chunk)
-                    if len(data) > MAX_AUDIO_BYTES:
-                        raise CloneError("invalid_audio")
-            if not data:
-                raise CloneError("invalid_audio")
-            with tempfile.TemporaryDirectory() as tmp:
-                path = Path(tmp) / "speech.mp3"
-                path.write_bytes(data)
-                duration = validate_audio(path, timeout=min(5, remaining()))
-                remaining()
-                Path(output_path).write_bytes(data)
-            return duration
+            if task_observer:
+                task_observer(task_id)
+            return _poll_and_download(session, key, task_id, output_path, deadline,
+                                      observer, poll_observer)
+    except httpx.TimeoutException:
+        raise CloneError("timeout") from None
+    except httpx.HTTPError:
+        raise CloneError("unavailable") from None
+    except (ValueError, TypeError, AttributeError, OSError):
+        raise CloneError("invalid_response") from None
+
+
+def resume_clone_speech(task_id, output_path, api_key=None, observer=None, poll_observer=None):
+    """Only GET a previously created task and its output; never submit a task."""
+    if not valid_task_id(task_id):
+        raise CloneError("invalid_task_id")
+    key, timeout = resume_configuration(api_key)
+    deadline = time.monotonic() + timeout
+    try:
+        with httpx.Client(follow_redirects=False, trust_env=False) as session:
+            return _poll_and_download(session, key, task_id, output_path, deadline,
+                                      observer, poll_observer)
     except httpx.TimeoutException:
         raise CloneError("timeout") from None
     except httpx.HTTPError:

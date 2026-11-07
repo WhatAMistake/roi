@@ -5,8 +5,8 @@ The default remains `TTS_PROVIDER=fable`. The documented CometAPI
 offers `seed_audio` with `voice: {type: reference-audio, audioUri: ...}`.
 Its schema explicitly documents both an HTTPS URL and a Base64 audio Data URI
 of at most 5 MiB; [Runway's SDK](https://github.com/runwayml/sdk-python/blob/main/src/runwayml/types/text_to_speech_create_params.py)
-documents `data:audio/mp3;base64,...`. Actual CometAPI acceptance and use of
-the reference have not been verified by a live test.
+documents `data:audio/mp3;base64,...`. A user-reported live submission returned
+HTTP 200, but task completion and actual use of the reference remain unverified.
 It creates a task with `POST /runwayml/v1/text_to_speech`; poll
 `GET /runwayml/v1/tasks/{id}` with Bearer authentication and download a
 temporary output URL after `SUCCEEDED`. This is reference-conditioned synthesis,
@@ -35,9 +35,35 @@ Set `TTS_CLONE_MODEL=seed_audio`, leave
 
 Run `python scripts/probe_tts_clone.py` for a free offline configuration check.
 Run `python scripts/probe_tts_clone.py --live` only when ready to pay for one
-short generation. It polls the task and stores the result in ignored
+short generation. It saves the task ID immediately in the ignored private
+`temp_audio/.tts_probe/task.json` (owner-only permissions on POSIX; current-user
+ACL on Windows), polls the task and stores the result in ignored
 `temp_audio/`. It never prints the reference data, path, key or task ID.
 Unknown provider error codes are redacted because error fields may echo secrets.
+The file is not overwritten; archive/remove it securely before another live
+test. If creation returns no usable ID or the connection times out before the
+ID arrives, the empty file cannot recover the task; check the provider's
+dashboard/support instead.
+
+Run `python scripts/probe_tts_clone.py --resume` to poll the saved ID and
+download a completed MP3. This makes only GET requests, never creates another
+task, and does not require the reference or `TTS_CLONE_VERIFIED=1`. The same
+account's API key is required; local audio tools are needed to validate a
+completed result. For an older task whose
+ID was not saved, retrieve the ID privately from the provider if available,
+then run `python scripts/probe_tts_clone.py --import-task-id` and enter it at
+the hidden prompt; importing makes no HTTP requests. The old probe did not
+save the ID or last status, so its timeout output cannot recover either.
+Completed output URLs may expire. Polling/download billing and task retention
+are not established here.
+
+The probe reports elapsed polling wait, the last known task state and the
+last poll's HTTP status. `TTS_CLONE_TIMEOUT` (default 12, maximum 120 seconds)
+is a shared deadline for preparation, submission, polling and download in live
+mode; on resume it covers polling and download. There is no fixed poll-count
+limit. Network timeouts are best-effort, not a hard process-kill deadline.
+The previous version stopped after five polls regardless of the configured
+timeout, so its timeout does not imply that the configured duration elapsed.
 Successful decoding does not establish voice identity: listen to the result,
 compare it to the reference yourself.
 No real-world success has been established by the automated tests.
