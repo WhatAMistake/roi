@@ -640,12 +640,8 @@ class ExistentialTherapistBot:
             return "Ошибка: LLM клиент не инициализирован."
         
         try:
-            response = self.client.audio.speech.create(
-                model=os.getenv("TTS_MODEL", "tts-1"),
-                voice="fable",
-                input=text
-            )
-            response.stream_to_file(output_path)
+            from tts_service import generate_speech
+            generate_speech(self.client, text, output_path, api_key=self.api_key)
             return output_path
         except Exception as e:
             return f"Ошибка генерации речи: {e}"    
