@@ -5,8 +5,8 @@ The default remains `TTS_PROVIDER=fable`. The documented CometAPI
 offers `seed_audio` with `voice: {type: reference-audio, audioUri: ...}`.
 Its schema explicitly documents both an HTTPS URL and a Base64 audio Data URI
 of at most 5 MiB; [Runway's SDK](https://github.com/runwayml/sdk-python/blob/main/src/runwayml/types/text_to_speech_create_params.py)
-documents `data:audio/mp3;base64,...`. A user-reported live submission returned
-HTTP 200, but task completion and actual use of the reference remain unverified.
+documents `data:audio/mp3;base64,...`. The user reports successful production
+synthesis with the cloned voice; automated tests do not verify voice identity.
 It creates a task with `POST /runwayml/v1/text_to_speech`; poll
 `GET /runwayml/v1/tasks/{id}` with Bearer authentication and download a
 temporary output URL after `SUCCEEDED`. This is reference-conditioned synthesis,
@@ -32,6 +32,18 @@ there is no automatic URL fallback.
 Set `TTS_CLONE_MODEL=seed_audio`, leave
 `TTS_CLONE_VOICE_ID` empty, and use the existing `OPENAI_API_KEY` or
 `COMET_API_KEY` (the OpenAI key takes precedence).
+
+CometAPI documents `seed_audio`'s `speechRate` as an integer from -50 to 100;
+zero (or omission) is normal. `TTS_CLONE_SPEECH_RATE=10` is a modest starting
+point, not a documented 10% multiplier: listen and adjust. The code default is
+0 when the setting is absent. `TTS_CLONE_SPEED_METHOD=api` (default) sends
+`speechRate` only to clone TTS. If the provider does not actually support it,
+opt in to `TTS_CLONE_SPEED_METHOD=atempo` with rate 10: the request omits
+`speechRate` and FFmpeg applies `atempo=1.1` to the generated MP3, without
+changing the reference or fable fallback. Rate 0 disables acceleration in both
+modes; other atempo rates are rejected. A resumed task downloads the original
+provider output, without local postprocessing, because the original method is
+not stored. Postprocessing shares the clone deadline.
 
 Run `python scripts/probe_tts_clone.py` for a free offline configuration check.
 Run `python scripts/probe_tts_clone.py --live` only when ready to pay for one

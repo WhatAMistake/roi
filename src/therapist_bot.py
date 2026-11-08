@@ -661,7 +661,7 @@ class ExistentialTherapistBot:
             hypothesis = self.rag.aggregate_given_evidence(hits) if hits else None
             return hypothesis.to_dict() if hypothesis else {}
         except Exception as exc:
-            print(f"[ANALYZE] Crowd retrieval failed: {exc}")
+            print(f"[ANALYZE] Crowd retrieval failed: {type(exc).__name__}")
             return {}
 
     def _remember_hypothesis(self, hypothesis: dict) -> None:
@@ -683,8 +683,8 @@ class ExistentialTherapistBot:
             )
         except Exception as exc:
             # Do not restart a stream on another model after output was emitted.
-            print(f"[ANALYZE] Generation failed: {exc}")
-            yield f"Ошибка: {exc}"
+            print(f"[ANALYZE] Generation failed: {type(exc).__name__}")
+            yield "Ошибка: не удалось завершить анализ."
 
     def analyze_associations_stream(self, associations: dict[str, list[str]]):
         """Explore four sets of associations without forcing a dominant theme."""
@@ -781,16 +781,15 @@ class ExistentialTherapistBot:
     def analyze_story_stream(self, story: str):
         """Explore a story and retrieval evidence as provisional possibilities."""
         self._remember_hypothesis({})
-        if not self.rag:
-            yield "Анализ истории пока недоступен."
-            return
-        story_for_rag = self._translate_text(story, "ru") if self.language == "en" else story
-        try:
-            similar = self.rag.search_similar_narratives(story_for_rag, n_results=3)
-        except Exception as exc:
-            print(f"[ANALYZE] Narrative search failed: {exc}")
-            similar = []
-        hypothesis = self._crowd_hypothesis(story_for_rag)
+        similar = []
+        hypothesis = {}
+        if self.rag:
+            story_for_rag = self._translate_text(story, "ru") if self.language == "en" else story
+            try:
+                similar = self.rag.search_similar_narratives(story_for_rag, n_results=3)
+            except Exception as exc:
+                print(f"[ANALYZE] Narrative search failed: {type(exc).__name__}")
+            hypothesis = self._crowd_hypothesis(story_for_rag)
         self._remember_hypothesis(hypothesis)
         data = {"story": story, "similar_narratives": [r.content[:300] for r in similar],
                 "retrieval_hypothesis": hypothesis}

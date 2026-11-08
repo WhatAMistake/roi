@@ -26,7 +26,7 @@ def owner(tmp_path, monkeypatch):
         "user_consecutive_messages", "message_queue",
     ):
         setattr(bot, name, {})
-    bot.bot = SimpleNamespace(send_chat_action=AsyncMock())
+    bot.bot = SimpleNamespace(id=123, send_chat_action=AsyncMock())
     bot.prefs_path = tmp_path / "data" / "prefs.json"
     bot._prefs_loaded = True
     return bot
@@ -595,3 +595,250 @@ async def test_analysis_failure_notice_and_state(owner, monkeypatch, kind, failu
     if failure == "delivery":
         title = "Interpretation:\n\n" if kind == "assoc" else "Existential response:\n\n"
         assert any(item.text == (title + "x" * 5000)[:4096] for item in telegram.visible)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["assoc", "story"])
+async def test_analysis_does_not_replay_long_answer_as_rapid_edits(owner, kind):
+    therapist = Therapist([])
+    response = "a detailed response with several words. " * 200
+    therapist.analyze_story_stream = lambda story: iter([response])
+    therapist.analyze_associations_stream = lambda associations: iter([response])
+    owner.sessions[7] = therapist
+    owner.temp_associations = {7: {"freedom": ["free"], "nonsense": ["void"], "solitude": ["alone"]}}
+    telegram = FakeTelegram()
+    if kind == "story":
+        owner.user_states[7] = "analyze_story"
+        await owner._handle_story_input(telegram, "A sufficiently long story for analysis.")
+        title = "Existential response:\n\n"
+        parts = telegram.visible
+    else:
+        owner.user_states[7] = "assoc_death"
+        await owner._handle_assoc_input(telegram, "assoc_death", "death")
+        title = "Interpretation:\n\n"
+        parts = telegram.visible[1:]
+    assert "".join(part.text for part in parts) == title + response
+    assert sum(part.edit_text.await_count for part in parts) == 1
+    assert owner.user_states[7] == "chat"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["short", "x" * 3001])
+async def test_invalid_story_releases_queue_slot(owner, text):
+    owner.message_queue[7] = [1]
+    owner.user_states[7] = "analyze_story"
+    await owner._handle_story_input(message(), text)
+    assert owner.message_queue[7] == []
+    assert owner.user_states[7] == "analyze_story"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["ru", "en"])
+async def test_story_end_to_end_with_real_analysis_stream(owner, language):
+    from therapist_bot import ExistentialTherapistBot
+    therapist = ExistentialTherapistBot(api_key="TEST", use_rag=False, language=language)
+    therapist.client = Mock()
+    response = "A complete reflection with enough detail."
+    therapist.client.chat.completions.create.return_value = iter([
+        SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(content=response), finish_reason="stop")])
+    ])
+    owner.sessions[7] = therapist
+    owner.user_langs[7] = language
+    owner.user_states[7] = "analyze_story"
+    telegram = FakeTelegram()
+    await owner._handle_story_input(telegram, "A sufficiently long story for analysis.")
+    title = "Экзистенциальный отклик:\n\n" if language == "ru" else "Existential response:\n\n"
+    assert telegram.contents() == title + response
+    assert owner.user_states[7] == "chat"
+    assert therapist.client.chat.completions.create.call_args.kwargs["stream"] is True
+
+
+@pytest.fixture
+def fast_voice_actions(monkeypatch):
+    record_voice = tb.ChatActionSender.record_voice
+    def fast(**kwargs):
+        assert kwargs["interval"] == 4.5
+        kwargs["interval"] = 0.03
+        return record_voice(**kwargs)
+    monkeypatch.setattr(tb.ChatActionSender, "record_voice", fast)
+
+
+def voice_message(user_id=7):
+    msg = message()
+    msg.from_user.id = user_id
+    msg.chat.id = user_id
+    msg.answer_voice = AsyncMock()
+    return msg
+
+
+def voice_therapist(started, release, outcome="success"):
+    therapist = Therapist([])
+    therapist.chat = lambda text: "spoken answer"
+    def generate(text, output):
+        started.set()
+        release.wait(timeout=5)
+        if outcome == "exception":
+            raise RuntimeError("private")
+        if outcome == "error":
+            return "Ошибка генерации"
+        Path(output).write_bytes(b"voice")
+        return output
+    therapist.generate_speech = generate
+    return therapist
+
+
+@pytest.mark.asyncio
+async def test_voice_action_repeats_while_thread_runs_and_stops_before_delivery(owner, monkeypatch, tmp_path, fast_voice_actions):
+    monkeypatch.chdir(tmp_path)
+    started, release = threading.Event(), threading.Event()
+    owner.sessions[7] = voice_therapist(started, release)
+    msg = voice_message()
+    task = asyncio.create_task(owner._handle_chat(msg, "hello", is_voice=True))
+    try:
+        assert await asyncio.to_thread(started.wait, 2)
+        await asyncio.sleep(0.12)
+        actions = [c for c in owner.bot.send_chat_action.await_args_list if c.kwargs["action"] == "record_voice"]
+        assert len(actions) >= 2
+        assert all(c.kwargs["chat_id"] == 7 for c in actions)
+        assert not task.done()
+    finally:
+        release.set()
+    await task
+    msg.answer_voice.assert_awaited_once()
+    count = owner.bot.send_chat_action.await_count
+    await asyncio.sleep(0.08)
+    assert owner.bot.send_chat_action.await_count == count
+    assert not (tmp_path / "temp_audio" / "response_7.mp3").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["error", "exception"])
+async def test_voice_action_stops_on_generation_error(owner, monkeypatch, tmp_path, fast_voice_actions, outcome):
+    monkeypatch.chdir(tmp_path)
+    started, release = threading.Event(), threading.Event()
+    owner.sessions[7] = voice_therapist(started, release, outcome)
+    msg = voice_message()
+    task = asyncio.create_task(owner._handle_chat(msg, "hello", is_voice=True))
+    try:
+        assert await asyncio.to_thread(started.wait, 2)
+        await asyncio.sleep(0.06)
+    finally:
+        release.set()
+    await task
+    msg.answer_voice.assert_not_awaited()
+    count = owner.bot.send_chat_action.await_count
+    await asyncio.sleep(0.08)
+    assert owner.bot.send_chat_action.await_count == count
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "exception"])
+async def test_cancelled_voice_stops_action_and_waits_for_worker_cleanup(owner, monkeypatch, tmp_path, fast_voice_actions, outcome):
+    monkeypatch.chdir(tmp_path)
+    started, release = threading.Event(), threading.Event()
+    owner.sessions[7] = voice_therapist(started, release, outcome)
+    msg = voice_message()
+    task = asyncio.create_task(owner._handle_chat(msg, "hello", is_voice=True))
+    try:
+        assert await asyncio.to_thread(started.wait, 2)
+        await asyncio.sleep(0.06)
+        task.cancel()
+        await asyncio.sleep(0.06)
+        count = owner.bot.send_chat_action.await_count
+        await asyncio.sleep(0.08)
+        assert owner.bot.send_chat_action.await_count == count
+        assert not task.done()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    msg.answer_voice.assert_not_awaited()
+    assert not (tmp_path / "temp_audio" / "response_7.mp3").exists()
+
+
+@pytest.mark.asyncio
+async def test_voice_action_continues_through_fable_fallback(owner, monkeypatch, tmp_path, fast_voice_actions):
+    import tts_service as tts
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TTS_PROVIDER", "clone")
+    monkeypatch.delenv("TTS_MODEL", raising=False)
+    monkeypatch.delenv("TTS_FALLBACK_MODEL", raising=False)
+    monkeypatch.delenv("TTS_FALLBACK_VOICE", raising=False)
+    started, release = threading.Event(), threading.Event()
+    def failed_clone(*args, **kwargs):
+        started.set()
+        release.wait(timeout=5)
+        raise tts.CloneError("unavailable")
+    monkeypatch.setattr(tts, "clone_speech", failed_clone)
+    client = Mock()
+    client.audio.speech.create.return_value.stream_to_file.side_effect = lambda path: Path(path).write_bytes(b"fable")
+    therapist = Therapist([])
+    therapist.chat = lambda text: "spoken answer"
+    therapist.generate_speech = lambda text, path: tts.generate_speech(client, text, path)
+    owner.sessions[7] = therapist
+    msg = voice_message()
+    task = asyncio.create_task(owner._handle_chat(msg, "hello", is_voice=True))
+    try:
+        assert await asyncio.to_thread(started.wait, 2)
+        await asyncio.sleep(0.08)
+        assert sum(c.kwargs["action"] == "record_voice"
+                   for c in owner.bot.send_chat_action.await_args_list) >= 2
+    finally:
+        release.set()
+    await task
+    client.audio.speech.create.assert_called_once_with(model="tts-1", voice="fable", input="spoken answer")
+    msg.answer_voice.assert_awaited_once()
+    count = owner.bot.send_chat_action.await_count
+    await asyncio.sleep(0.08)
+    assert owner.bot.send_chat_action.await_count == count
+
+
+@pytest.mark.asyncio
+async def test_voice_actions_are_independent_for_concurrent_users(owner, monkeypatch, tmp_path, fast_voice_actions):
+    monkeypatch.chdir(tmp_path)
+    started1, release1 = threading.Event(), threading.Event()
+    started2, release2 = threading.Event(), threading.Event()
+    owner.sessions[7] = voice_therapist(started1, release1)
+    owner.sessions[8] = voice_therapist(started2, release2)
+    tasks = [asyncio.create_task(owner._handle_chat(voice_message(user), "hello", is_voice=True))
+             for user in (7, 8)]
+    try:
+        assert await asyncio.to_thread(started1.wait, 2)
+        assert await asyncio.to_thread(started2.wait, 2)
+        await asyncio.sleep(0.08)
+        release1.set()
+        await tasks[0]
+        count1 = sum(c.kwargs["action"] == "record_voice" and c.kwargs["chat_id"] == 7
+                     for c in owner.bot.send_chat_action.await_args_list)
+        count2 = sum(c.kwargs["action"] == "record_voice" and c.kwargs["chat_id"] == 8
+                     for c in owner.bot.send_chat_action.await_args_list)
+        await asyncio.sleep(0.08)
+        assert sum(c.kwargs["action"] == "record_voice" and c.kwargs["chat_id"] == 7
+                   for c in owner.bot.send_chat_action.await_args_list) == count1
+        assert sum(c.kwargs["action"] == "record_voice" and c.kwargs["chat_id"] == 8
+                   for c in owner.bot.send_chat_action.await_args_list) > count2
+    finally:
+        release1.set()
+        release2.set()
+        await asyncio.gather(*tasks)
+
+
+@pytest.mark.asyncio
+async def test_voice_action_failure_does_not_prevent_delivery(owner, monkeypatch, tmp_path, fast_voice_actions):
+    monkeypatch.chdir(tmp_path)
+    started, release = threading.Event(), threading.Event()
+    owner.sessions[7] = voice_therapist(started, release)
+    async def action(**kwargs):
+        if kwargs["action"] == "record_voice":
+            raise RuntimeError("private")
+    owner.bot.send_chat_action.side_effect = action
+    msg = voice_message()
+    task = asyncio.create_task(owner._handle_chat(msg, "hello", is_voice=True))
+    try:
+        assert await asyncio.to_thread(started.wait, 2)
+        await asyncio.sleep(0.06)
+    finally:
+        release.set()
+    await task
+    msg.answer_voice.assert_awaited_once()

@@ -60,6 +60,38 @@ def test_story_preserves_competing_crowd_hypotheses_as_uncertain():
     obj.rag.aggregate_given_evidence.assert_called_once()
 
 
+@pytest.mark.parametrize("language", ["ru", "en"])
+def test_story_analysis_works_without_retrieval(language):
+    obj = make_bot()
+    obj.language = language
+    obj.rag = None
+    obj._translate_text = MagicMock()
+    assert obj.analyze_story("A complex story") == "A tentative reflection."
+    prompt = obj.client.chat.completions.create.call_args.kwargs["messages"][-1]["content"]
+    data = json.loads(prompt.rsplit("\n", 1)[-1])
+    assert data == {"story": "A complex story", "similar_narratives": [], "retrieval_hypothesis": {}}
+    obj._translate_text.assert_not_called()
+
+
+def test_story_analysis_survives_retrieval_failure(capsys):
+    obj = make_bot()
+    obj.rag.search_similar_narratives.side_effect = RuntimeError("private narrative")
+    obj.rag.search_similar_associations.side_effect = RuntimeError("private story")
+    assert obj.analyze_story("A complex story") == "A tentative reflection."
+    data = json.loads(obj.client.chat.completions.create.call_args.kwargs["messages"][-1]["content"].rsplit("\n", 1)[-1])
+    assert data["similar_narratives"] == [] and data["retrieval_hypothesis"] == {}
+    assert "private" not in capsys.readouterr().out
+
+
+def test_analysis_failure_does_not_log_or_expose_provider_message(capsys):
+    obj = make_bot()
+    obj.client.chat.completions.create.side_effect = RuntimeError("private story and provider details")
+    result = "".join(obj.analyze_story_stream("A complex story"))
+    assert result.startswith("Ошибка:")
+    assert "private" not in result
+    assert "private" not in capsys.readouterr().out
+
+
 def test_analysis_does_not_restart_on_another_model_after_partial_stream():
     obj = make_bot()
     obj.client.chat.completions.create.side_effect = lambda **kw: iter([SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="Partial"), finish_reason=None)])])

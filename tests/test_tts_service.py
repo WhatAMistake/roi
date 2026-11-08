@@ -24,6 +24,8 @@ def configured(monkeypatch, tmp_path):
         "TTS_REFERENCE_PATH": str(ref),
         "TTS_CLONE_VERIFIED": "1",
         "TTS_CLONE_TIMEOUT": "12",
+        "TTS_CLONE_SPEECH_RATE": "0",
+        "TTS_CLONE_SPEED_METHOD": "api",
         "OPENAI_API_KEY": "test-key",
     }
     for key, value in values.items():
@@ -82,6 +84,95 @@ def test_reference_speech_success_sends_one_generation(configured, monkeypatch):
                                 tts.REFERENCE_URI_PREFIX + base64.b64encode(b"reference").decode()}
     assert "voice_id" not in payload
     client.audio.speech.create.assert_not_called()
+
+
+@pytest.mark.parametrize("rate", ["-50", "0", "10", "100"])
+def test_clone_sends_configured_speech_rate(configured, monkeypatch, rate):
+    monkeypatch.setenv("TTS_CLONE_SPEECH_RATE", rate)
+    session, _ = fake_session(monkeypatch)
+    monkeypatch.setattr(tts, "validate_audio", lambda *a, **k: 1.0)
+    tts.clone_speech("Hello", configured / "result.mp3")
+    assert session.post.call_args.kwargs["json"]["speechRate"] == int(rate)
+    assert (configured / "reference.mp3").read_bytes() == b"reference"
+
+
+@pytest.mark.parametrize("rate,method", [("-51", "api"), ("101", "api"),
+                                          ("1.5", "api"), ("nan", "api"),
+                                          ("10", "unknown"), ("15", "atempo")])
+def test_invalid_speed_falls_back_before_network(configured, monkeypatch, rate, method):
+    monkeypatch.setenv("TTS_CLONE_SPEECH_RATE", rate)
+    monkeypatch.setenv("TTS_CLONE_SPEED_METHOD", method)
+    _, factory = fake_session(monkeypatch)
+    client = MagicMock()
+    tts.generate_speech(client, "Hello", configured / "result.mp3")
+    factory.assert_not_called()
+    client.audio.speech.create.assert_called_once_with(model="tts-1", voice="fable", input="Hello")
+
+
+@pytest.mark.parametrize("rate", ["0", "10"])
+def test_atempo_only_processes_nonzero_clone_without_api_acceleration(configured, monkeypatch, rate):
+    monkeypatch.setenv("TTS_CLONE_SPEECH_RATE", rate)
+    monkeypatch.setenv("TTS_CLONE_SPEED_METHOD", "atempo")
+    session, _ = fake_session(monkeypatch)
+    monkeypatch.setattr(tts, "validate_audio", lambda *a, **k: 1.0)
+    def ffmpeg(command, **kwargs):
+        assert command[command.index("-af") + 1] == "atempo=1.1"
+        Path(command[-1]).write_bytes(b"faster audio")
+    run = MagicMock(side_effect=ffmpeg)
+    monkeypatch.setattr(tts.subprocess, "run", run)
+    output = configured / "result.mp3"
+    tts.clone_speech("Hello", output)
+    assert "speechRate" not in session.post.call_args.kwargs["json"]
+    assert run.call_count == (1 if rate == "10" else 0)
+    assert output.read_bytes() == (b"faster audio" if rate == "10" else b"audio")
+    assert (configured / "reference.mp3").read_bytes() == b"reference"
+
+
+def test_atempo_failure_falls_back_without_processing_fable(configured, monkeypatch):
+    monkeypatch.setenv("TTS_CLONE_SPEECH_RATE", "10")
+    monkeypatch.setenv("TTS_CLONE_SPEED_METHOD", "atempo")
+    fake_session(monkeypatch)
+    monkeypatch.setattr(tts, "validate_audio", lambda *a, **k: 1.0)
+    run = MagicMock(side_effect=subprocess.CalledProcessError(1, "ffmpeg"))
+    monkeypatch.setattr(tts.subprocess, "run", run)
+    client = MagicMock()
+    tts.generate_speech(client, "Hello", configured / "result.mp3")
+    assert run.call_count == 1
+    client.audio.speech.create.assert_called_once_with(model="tts-1", voice="fable", input="Hello")
+
+
+def test_atempo_obeys_remaining_clone_deadline(configured, monkeypatch):
+    clock = FakeClock()
+    monkeypatch.setattr(tts, "time", clock)
+    monkeypatch.setenv("TTS_CLONE_SPEECH_RATE", "10")
+    monkeypatch.setenv("TTS_CLONE_SPEED_METHOD", "atempo")
+    session, _ = fake_session(monkeypatch)
+    session.get.side_effect = [
+        Response(body={"status": "RUNNING"}),
+        Response(body={"status": "SUCCEEDED", "output": ["https://example.com/output.mp3"]}),
+    ]
+    monkeypatch.setattr(tts, "validate_audio", lambda *a, **k: 1.0)
+    def ffmpeg(command, **kwargs):
+        assert kwargs["timeout"] == 11
+        raise subprocess.TimeoutExpired("ffmpeg", kwargs["timeout"])
+    monkeypatch.setattr(tts.subprocess, "run", ffmpeg)
+    client = MagicMock()
+    tts.generate_speech(client, "Hello", configured / "result.mp3")
+    client.audio.speech.create.assert_called_once_with(model="tts-1", voice="fable", input="Hello")
+
+
+def test_fable_never_uses_clone_speed(configured, monkeypatch):
+    monkeypatch.setenv("TTS_PROVIDER", "fable")
+    monkeypatch.setenv("TTS_CLONE_SPEECH_RATE", "10")
+    monkeypatch.setenv("TTS_CLONE_SPEED_METHOD", "atempo")
+    _, factory = fake_session(monkeypatch)
+    run = MagicMock()
+    monkeypatch.setattr(tts.subprocess, "run", run)
+    client = MagicMock()
+    tts.generate_speech(client, "Hello", configured / "result.mp3")
+    factory.assert_not_called()
+    run.assert_not_called()
+    client.audio.speech.create.assert_called_once_with(model="tts-1", voice="fable", input="Hello")
 
 
 @pytest.mark.parametrize("failure", ["provider", "timeout", "invalid_audio"])

@@ -108,6 +108,23 @@ def clone_timeout():
         raise CloneError("invalid_timeout") from None
 
 
+def clone_speed():
+    """Choose exactly one speed control; zero always keeps the original speed."""
+    try:
+        raw = os.getenv("TTS_CLONE_SPEECH_RATE", "0").strip()
+        if not re.fullmatch(r"[+-]?[0-9]+", raw):
+            raise ValueError
+        rate = int(raw)
+        method = os.getenv("TTS_CLONE_SPEED_METHOD", "api").strip().lower()
+        if not -50 <= rate <= 100 or method not in ("api", "atempo"):
+            raise ValueError
+        if method == "atempo" and rate not in (0, 10):
+            raise ValueError
+        return rate, method
+    except ValueError:
+        raise CloneError("invalid_speech_rate") from None
+
+
 def resume_configuration(api_key=None):
     """Resume requires neither the original reference nor the verification flag."""
     key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("COMET_API_KEY")
@@ -223,7 +240,7 @@ def _remaining(deadline):
 
 
 def _poll_and_download(session, key, task_id, output_path, deadline,
-                       observer=None, poll_observer=None):
+                       observer=None, poll_observer=None, postprocess=False):
     """Poll until a terminal state or the common deadline, then validate the audio."""
     headers = {"Authorization": "Bearer " + key}
     first = True
@@ -281,6 +298,24 @@ def _poll_and_download(session, key, task_id, output_path, deadline,
         path.write_bytes(data)
         duration = validate_audio(path, timeout=min(5, _remaining(deadline)))
         _remaining(deadline)
+        if postprocess:
+            processed = Path(tmp) / "faster.mp3"
+            try:
+                subprocess.run(
+                    ["ffmpeg", "-v", "error", "-xerror", "-i", str(path),
+                     "-map", "0:a:0", "-vn", "-af", "atempo=1.1",
+                     "-c:a", "libmp3lame", "-y", str(processed)],
+                    capture_output=True, timeout=_remaining(deadline), check=True,
+                )
+            except subprocess.TimeoutExpired:
+                raise CloneError("timeout") from None
+            except (OSError, subprocess.SubprocessError):
+                raise CloneError("invalid_audio") from None
+            if not processed.is_file() or not 0 < processed.stat().st_size <= MAX_AUDIO_BYTES:
+                raise CloneError("invalid_audio")
+            duration = validate_audio(processed, timeout=min(5, _remaining(deadline)))
+            data = processed.read_bytes()
+            _remaining(deadline)
         Path(output_path).write_bytes(data)
     return duration
 
@@ -289,6 +324,7 @@ def clone_speech(text, output_path, api_key=None, require_verified=True, observe
                  task_observer=None, poll_observer=None):
     """Submit exactly one task, persist its ID if requested, then poll."""
     reference, timeout = configuration(api_key, require_verified)
+    speech_rate, speed_method = clone_speed()
     key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("COMET_API_KEY")
     if not text or len(text) > 2048:
         raise CloneError("parameters")
@@ -301,7 +337,8 @@ def clone_speech(text, output_path, api_key=None, require_verified=True, observe
                 headers={"Authorization": "Bearer " + key},
                 json={"model": "seed_audio", "promptText": text,
                       "voice": {"type": "reference-audio", "audioUri": audio_uri},
-                      "outputFormat": "mp3"},
+                      "outputFormat": "mp3",
+                      **({"speechRate": speech_rate} if speed_method == "api" else {})},
                 timeout=_remaining(deadline),
             )
             if observer:
@@ -314,7 +351,8 @@ def clone_speech(text, output_path, api_key=None, require_verified=True, observe
             if task_observer:
                 task_observer(task_id)
             return _poll_and_download(session, key, task_id, output_path, deadline,
-                                      observer, poll_observer)
+                                      observer, poll_observer,
+                                      postprocess=speed_method == "atempo" and speech_rate != 0)
     except httpx.TimeoutException:
         raise CloneError("timeout") from None
     except httpx.HTTPError:

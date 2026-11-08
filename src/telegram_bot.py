@@ -111,6 +111,7 @@ try:
         TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter, TelegramServerError,
     )
     from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+    from aiogram.utils.chat_action import ChatActionSender
     from aiogram.utils.keyboard import ReplyKeyboardBuilder
     AIogram_AVAILABLE = True
 except ImportError:
@@ -148,7 +149,7 @@ except ImportError:
 
     types = _DummyAiogramTypes()
     F = _DummyF()
-    Bot = Dispatcher = Command = None
+    Bot = Dispatcher = Command = ChatActionSender = None
     class _DummyTelegramError(Exception):
         pass
     TelegramBadRequest = TelegramNetworkError = TelegramRetryAfter = TelegramServerError = _DummyTelegramError
@@ -176,6 +177,20 @@ class DeliveryError(RuntimeError):
     def __init__(self, delivered: str = ""):
         super().__init__("Telegram response delivery failed")
         self.delivered = delivered
+
+
+class _SafeChatActionBot:
+    """Action failures must not prevent delivery of an already generated voice."""
+
+    def __init__(self, bot):
+        self.bot = bot
+        self.id = bot.id
+
+    async def send_chat_action(self, **kwargs):
+        try:
+            return await self.bot.send_chat_action(**kwargs)
+        except Exception as exc:
+            logger.warning("Telegram voice action failed: type=%s", type(exc).__name__)
 
 
 def _parse_admin_id(raw_value: Optional[str]) -> int:
@@ -1853,16 +1868,17 @@ class TelegramTherapistBot:
             
             sent = await self._new_delivery_placeholder(message)
             try:
-                async with self._animate_loading_dots(sent):
+                # Avoid flooding Telegram with edits while a long analysis runs.
+                async with self._animate_loading_dots(sent, interval=4.0):
                     source = self._stream_generic(therapist.analyze_associations_stream, associations)
-                    analysis, shown = await self._smooth_stream_generic(source)
+                    analysis, _ = await self._smooth_stream_generic(source)
                 if not analysis.strip():
                     raise ValueError("Empty analysis")
                 title = 'Интерпретация' if lang == 'ru' else 'Interpretation'
                 prefix = f"{title}:\n\n"
                 # Deliver the model's text verbatim, with parsing disabled. Formatting
                 # each incomplete prefix separately corrupts Markdown and identifiers.
-                await self._deliver_response(message, sent, prefix + analysis, shown)
+                await self._deliver_response(message, sent, prefix + analysis)
                 self.user_states[user_id] = "chat"
                 del self.temp_associations[user_id]
             except DeliveryError as exc:
@@ -1882,24 +1898,34 @@ class TelegramTherapistBot:
         text = text.strip()        
         lang = self.user_langs.get(user_id, DEFAULT_LANG)
         if len(text) < 20:
-            await message.answer(t(lang, "story_too_short"))
+            try:
+                await message.answer(t(lang, "story_too_short"))
+            finally:
+                if user_id in self.message_queue and self.message_queue[user_id]:
+                    self.message_queue[user_id].pop(0)
             return
         
         if len(text) > 3000:
-            await message.answer(t(lang, "story_too_long"))
+            try:
+                await message.answer(t(lang, "story_too_long"))
+            finally:
+                if user_id in self.message_queue and self.message_queue[user_id]:
+                    self.message_queue[user_id].pop(0)
             return        
         therapist = self._get_therapist(user_id)
         
         sent = await self._new_delivery_placeholder(message)
         try:
-            async with self._animate_loading_dots(sent):
+            # The response is already buffered; replaying it three words at a
+            # time only delays delivery and can exhaust Telegram's edit quota.
+            async with self._animate_loading_dots(sent, interval=4.0):
                 source = self._stream_generic(therapist.analyze_story_stream, text)
-                analysis, shown = await self._smooth_stream_generic(source)
+                analysis, _ = await self._smooth_stream_generic(source)
             if not analysis.strip():
                 raise ValueError("Empty analysis")
             title = 'Экзистенциальный отклик' if lang == 'ru' else 'Existential response'
             prefix = f"{title}:\n\n"
-            await self._deliver_response(message, sent, prefix + analysis, shown)
+            await self._deliver_response(message, sent, prefix + analysis)
             self.user_states[user_id] = "chat"
         except DeliveryError as exc:
             await self._show_delivery_error(
@@ -2561,7 +2587,29 @@ class TelegramTherapistBot:
                         temp_dir = Path("temp_audio")
                         temp_dir.mkdir(exist_ok=True)
                         audio_path = temp_dir / f"response_{user_id}.mp3"
-                        result = await asyncio.to_thread(therapist.generate_speech, response, str(audio_path))
+                        worker = asyncio.create_task(
+                            asyncio.to_thread(therapist.generate_speech, response, str(audio_path))
+                        )
+                        try:
+                            async with ChatActionSender.record_voice(
+                                bot=_SafeChatActionBot(self.bot), chat_id=message.chat.id,
+                                message_thread_id=getattr(message, "message_thread_id", None),
+                                interval=4.5,
+                            ):
+                                result = await asyncio.shield(worker)
+                        except asyncio.CancelledError:
+                            # Stop the indicator immediately, but keep the user's lock
+                            # until the synchronous worker can no longer write its file.
+                            try:
+                                await worker
+                            except Exception as exc:
+                                logger.warning("Cancelled voice worker failed: type=%s", type(exc).__name__)
+                            finally:
+                                try:
+                                    audio_path.unlink(missing_ok=True)
+                                except OSError:
+                                    logger.warning("Cancelled voice cleanup failed")
+                            raise
                         if not result.startswith("Ошибка"):
                             try:
                                 await message.answer_voice(types.FSInputFile(result))
