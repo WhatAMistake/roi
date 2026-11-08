@@ -5,7 +5,7 @@ import pytest
 from unittest.mock import AsyncMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from telegram_bot import TelegramTherapistBot
+from telegram_bot import TelegramRetryAfter, TelegramTherapistBot
 
 
 @pytest.mark.asyncio
@@ -72,3 +72,20 @@ async def test_animate_loading_dots_ignores_edit_errors():
         await asyncio.sleep(0.08)
 
     assert mock_msg.edit_text.call_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_dots_stop_and_record_retry_deadline():
+    bot = TelegramTherapistBot.__new__(TelegramTherapistBot)
+    mock_msg = AsyncMock()
+    mock_msg.edit_text.side_effect = TelegramRetryAfter(object(), "private", retry_after=3)
+    before = asyncio.get_running_loop().time()
+
+    async with bot._animate_loading_dots(
+        mock_msg, interval=0.01, stop_on_rate_limit=True,
+    ) as state:
+        await asyncio.sleep(0.06)
+
+    assert mock_msg.edit_text.await_count == 1
+    assert state.rate_limited
+    assert state.retry_deadline >= before + 3

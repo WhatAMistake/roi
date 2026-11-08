@@ -10,6 +10,7 @@ import re
 import threading
 import time
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 from datetime import datetime
@@ -177,6 +178,12 @@ class DeliveryError(RuntimeError):
     def __init__(self, delivered: str = ""):
         super().__init__("Telegram response delivery failed")
         self.delivered = delivered
+
+
+@dataclass
+class _LoadingAnimationState:
+    rate_limited: bool = False
+    retry_deadline: float = 0.0
 
 
 class _SafeChatActionBot:
@@ -1916,16 +1923,21 @@ class TelegramTherapistBot:
         
         sent = await self._new_delivery_placeholder(message)
         try:
-            # The response is already buffered; replaying it three words at a
-            # time only delays delivery and can exhaust Telegram's edit quota.
-            async with self._animate_loading_dots(sent, interval=4.0):
+            async with self._animate_loading_dots(
+                sent, stop_on_rate_limit=True,
+            ) as loading:
                 source = self._stream_generic(therapist.analyze_story_stream, text)
                 analysis, _ = await self._smooth_stream_generic(source)
             if not analysis.strip():
                 raise ValueError("Empty analysis")
             title = 'Экзистенциальный отклик' if lang == 'ru' else 'Existential response'
             prefix = f"{title}:\n\n"
-            await self._deliver_response(message, sent, prefix + analysis)
+            if loading.rate_limited:
+                await asyncio.sleep(max(0.0, loading.retry_deadline - time.monotonic()))
+            await self._deliver_response(
+                message, sent, prefix + analysis,
+                animation_max_edits=0 if loading.rate_limited else 6,
+            )
             self.user_states[user_id] = "chat"
         except DeliveryError as exc:
             await self._show_delivery_error(
@@ -2125,12 +2137,15 @@ class TelegramTherapistBot:
                 break
 
     @asynccontextmanager
-    async def _animate_loading_dots(self, message, interval: float = 0.37):
+    async def _animate_loading_dots(
+        self, message, interval: float = 0.37, *, stop_on_rate_limit: bool = False,
+    ):
         """Анимирует индикатор ожидания (3 -> 2 -> 1 -> 2 -> 3 точки),
         пока модель генерирует ответ.
         """
+        state = _LoadingAnimationState()
         if message is None:
-            yield
+            yield state
             return
         stop_event = asyncio.Event()
 
@@ -2155,12 +2170,18 @@ class TelegramTherapistBot:
                             "Telegram loading_edit failed: type=%s part=0 chars=%d",
                             type(exc).__name__, len(frame),
                         )
+                        if stop_on_rate_limit and isinstance(exc, TelegramRetryAfter):
+                            state.rate_limited = True
+                            state.retry_deadline = time.monotonic() + max(
+                                0.0, float(exc.retry_after),
+                            )
+                            break
             except asyncio.CancelledError:
                 pass
 
         task = asyncio.create_task(_runner())
         try:
-            yield
+            yield state
         finally:
             stop_event.set()
             if not task.done():
@@ -2406,9 +2427,11 @@ class TelegramTherapistBot:
         except Exception as e:
             print(f"[VOID] Text spacer failed: {type(e).__name__}: {e}")
 
-    async def _telegram_request(self, operation, call, *args, part_index=0, **kwargs):
+    async def _telegram_request(
+        self, operation, call, *args, part_index=0, max_attempts: int = 3, **kwargs,
+    ):
         """Retry transient Telegram failures without logging message contents."""
-        for attempt in range(1, 4):
+        for attempt in range(1, max_attempts + 1):
             try:
                 result = await call(*args, **kwargs)
                 if result is None or result is False:
@@ -2428,11 +2451,11 @@ class TelegramTherapistBot:
                     "Telegram %s failed: type=%s attempt=%d part=%d chars=%d retry_delay=%s",
                     operation, type(exc).__name__, attempt, part_index,
                     len(args[0]) if args and isinstance(args[0], str) else 0,
-                    delay if transient and attempt < 3 and delay <= 30 else None,
+                    delay if transient and attempt < max_attempts and delay <= 30 else None,
                 )
                 # A retry-after longer than the bounded wait is a failure, not
                 # permission to retry before Telegram's deadline.
-                if not transient or attempt == 3 or delay > 30:
+                if not transient or attempt == max_attempts or delay > 30:
                     raise
                 await asyncio.sleep(delay)
 
@@ -2462,7 +2485,9 @@ class TelegramTherapistBot:
             pass  # The failed request was logged; the answer can be sent directly.
         return None
 
-    async def _deliver_response(self, message, sent, text, shown=None):
+    async def _deliver_response(
+        self, message, sent, text, shown=None, *, animation_max_edits: int = 0,
+    ):
         """Deliver only confirmed text; raise with the confirmed prefix on failure."""
         lang = self.user_langs.get(message.from_user.id, DEFAULT_LANG)
         parts = self._split_text(text)
@@ -2484,6 +2509,29 @@ class TelegramTherapistBot:
             last = ""
             try:
                 if target is not None:
+                    if index == 0 and animation_max_edits > 1:
+                        # Animate only the first part. Reserve one edit for its
+                        # complete text and bound the total regardless of length.
+                        candidates = self._typing_prefixes(part)[:-1]
+                        count = min(len(candidates), animation_max_edits - 1)
+                        previews = [
+                            candidates[(i * len(candidates)) // count]
+                            for i in range(count)
+                        ]
+                        for preview in previews:
+                            try:
+                                await self._telegram_request(
+                                    "edit_text", target.edit_text, preview,
+                                    part_index=index, parse_mode=None, max_attempts=1,
+                                )
+                                last = preview
+                            except Exception as exc:
+                                # The animation is optional. Honor Telegram's
+                                # deadline, then try to deliver the full part.
+                                if isinstance(exc, TelegramRetryAfter):
+                                    await asyncio.sleep(max(0.0, float(exc.retry_after)))
+                                break
+                            await asyncio.sleep(0.5)
                     previews = self._typing_prefixes(part) if shown else [part]
                     for preview in previews:
                         try:
