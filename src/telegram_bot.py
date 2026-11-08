@@ -158,11 +158,12 @@ except ImportError:
     KeyboardButton = _DummyKeyboardButton
     ReplyKeyboardBuilder = _DummyReplyKeyboardBuilder
 
-from therapist_bot import ExistentialTherapistBot, Message
+from therapist_bot import ExistentialTherapistBot, Message, VoiceResponseTooLong, voice_response_fits
 from lang_utils import detect_language
 from i18n import t
 from privacy import ConsentMiddleware, has_consent, show_consent
 from code_reviewer import UpdateCache
+from music import Music
 
 
 DEFAULT_LLM_MODEL = "deepseek-v4.1-flash"
@@ -398,6 +399,7 @@ class TelegramTherapistBot:
         self._prefs_loaded = False
         self._load_user_prefs()
 
+        self.music = Music(self)
 
         # Время запуска бота для фильтрации старых сообщений
         import time
@@ -662,6 +664,14 @@ class TelegramTherapistBot:
         @self.dp.message(Command("help"))
         async def cmd_help(message: types.Message):
             await self._handle_help(message)
+
+        @self.dp.message(Command("music"))
+        async def cmd_music(message: types.Message):
+            await self.music.command(message)
+
+        @self.dp.callback_query(F.data.startswith("music:"))
+        async def music_callback(callback: types.CallbackQuery):
+            await self.music.callback(callback)
 
         @self.dp.message(Command("updates"))
         async def cmd_updates(message: types.Message):
@@ -1088,7 +1098,7 @@ class TelegramTherapistBot:
         lang = self.user_langs.get(user_id, DEFAULT_LANG)
         help_text = t(lang, "help")
 
-        await message.answer(help_text, parse_mode="HTML")
+        await message.answer(help_text + ("\n/music — music" if lang == "en" else "\n/music — музыка"), parse_mode="HTML")
     
     async def _handle_stats(self, message: types.Message):
         """Обработка /stats (только для админа)."""
@@ -1542,6 +1552,13 @@ class TelegramTherapistBot:
     async def _handle_reset(self, message: types.Message):
         user_id = message.from_user.id
         async with self._get_user_lock(user_id):
+            if hasattr(self, "music"):
+                try:
+                    store = self.music.existing_store()
+                    if store:
+                        store.reset_session(user_id)
+                except Exception as exc:
+                    logger.warning("Music session reset failed: type=%s", type(exc).__name__)
             if user_id in self.sessions:
                 self.sessions[user_id].reset()
             self.user_message_counts[user_id] = 0
@@ -2583,17 +2600,27 @@ class TelegramTherapistBot:
             return
         async with self._get_user_lock(user_id):
             therapist = self._get_therapist(user_id)
+            if hasattr(self, "music"):
+                try:
+                    store = self.music.existing_store()
+                    if store:
+                        store.invalidate_buttons(user_id)
+                except Exception as exc:
+                    logger.warning("Music button invalidation failed: type=%s", type(exc).__name__)
             previous = list(therapist.history)
             sent = None
             delivered = ""
             try:
                 await self.bot.send_chat_action(chat_id=message.chat.id, action="typing")
                 if is_voice:
-                    worker = asyncio.create_task(asyncio.to_thread(therapist.chat, text))
+                    worker = asyncio.create_task(asyncio.to_thread(therapist.chat, text, is_voice=True))
                     try:
                         response = await asyncio.shield(worker)
                     except asyncio.CancelledError:
-                        await worker
+                        try:
+                            await worker
+                        except Exception as exc:
+                            logger.warning("Cancelled chat worker failed: type=%s", type(exc).__name__)
                         raise
                     shown = None
                 else:
@@ -2602,6 +2629,11 @@ class TelegramTherapistBot:
                         response, shown = await self._smooth_stream(therapist, text)
                 if not response or not response.strip() or re.match(r"^Ошибка(?::|\s)", response):
                     raise ValueError("Empty or failed response")
+                # Chat delivery uses parse_mode=None and performs no Markdown or
+                # HTML conversion. Check exactly the literal string sent to TTS.
+                if is_voice and not voice_response_fits(response):
+                    logger.warning("Voice response exceeds character limit")
+                    raise VoiceResponseTooLong()
                 delivered = await self._deliver_response(message, sent, response, shown)
                 if not delivered:
                     raise ValueError("Response was not delivered")
@@ -2624,19 +2656,18 @@ class TelegramTherapistBot:
                         )
                     except Exception:
                         pass
-                if self.user_message_counts[user_id] >= 16:
-                    summary = await self._generate_user_summary(user_id, therapist)
-                    if not summary.startswith("Ошибка генерации:"):
-                        self.user_summaries[user_id] = summary
-                        self.user_message_counts[user_id] = 0
-                        self._save_user_prefs(force=True)
-                if is_voice and delivered == response:
+                if is_voice:
+                    audio_path = None
                     try:
+                        if delivered != response:
+                            raise ValueError("Voice response was not fully delivered")
                         temp_dir = Path("temp_audio")
                         temp_dir.mkdir(exist_ok=True)
                         audio_path = temp_dir / f"response_{user_id}.mp3"
+                        if not voice_response_fits(delivered):
+                            raise ValueError("Voice response exceeds character limit")
                         worker = asyncio.create_task(
-                            asyncio.to_thread(therapist.generate_speech, response, str(audio_path))
+                            asyncio.to_thread(therapist.generate_speech, delivered, str(audio_path))
                         )
                         try:
                             async with ChatActionSender.record_voice(
@@ -2658,17 +2689,36 @@ class TelegramTherapistBot:
                                 except OSError:
                                     logger.warning("Cancelled voice cleanup failed")
                             raise
-                        if not result.startswith("Ошибка"):
-                            try:
-                                await message.answer_voice(types.FSInputFile(result))
-                            finally:
-                                Path(result).unlink(missing_ok=True)
+                        if not result or str(result).startswith("Ошибка") or not Path(result).is_file():
+                            raise RuntimeError("Voice generation failed")
+                        await message.answer_voice(types.FSInputFile(result))
                     except Exception as exc:
-                        print(f"[VOICE] Delivery failed: {type(exc).__name__}")
+                        logger.warning("Voice generation or delivery failed: type=%s", type(exc).__name__)
+                        try:
+                            await message.answer(t(lang, "voice_delivery_failed"), parse_mode=None)
+                        except Exception as notice_exc:
+                            logger.warning("Voice error notice failed: type=%s", type(notice_exc).__name__)
+                    finally:
+                        if audio_path is not None:
+                            try:
+                                audio_path.unlink(missing_ok=True)
+                            except OSError:
+                                logger.warning("Voice cleanup failed")
+                if self.user_message_counts[user_id] >= 16:
+                    summary = await self._generate_user_summary(user_id, therapist)
+                    if not summary.startswith("Ошибка генерации:"):
+                        self.user_summaries[user_id] = summary
+                        self.user_message_counts[user_id] = 0
+                        self._save_user_prefs(force=True)
+                if hasattr(self, "music"):
+                    await self.music.maybe_offer(message, therapist, user_id)
             except asyncio.CancelledError:
                 if not delivered:
                     therapist.history = previous
                 raise
+            except VoiceResponseTooLong:
+                therapist.history = previous
+                await self._show_delivery_error(message, sent, t(lang, "voice_length_failed"))
             except DeliveryError as exc:
                 therapist.history = previous
                 if exc.delivered:

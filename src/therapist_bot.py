@@ -28,6 +28,21 @@ class Message:
 
 _global_rag = None
 
+
+VOICE_RESPONSE_LIMIT = 1700
+
+
+class VoiceResponseTooLong(RuntimeError):
+    """A complete voice response could not be generated within the limit."""
+
+
+def voice_response_fits(text: str) -> bool:
+    """Count the literal TTS input, also conservatively counting UTF-16 units."""
+    return len(text) <= VOICE_RESPONSE_LIMIT and sum(
+        2 if ord(char) > 0xFFFF else 1 for char in text
+    ) <= VOICE_RESPONSE_LIMIT
+
+
 class ExistentialTherapistBot:    
     """Экзистенциальный терапевт-бот."""
 
@@ -513,7 +528,7 @@ class ExistentialTherapistBot:
 
 
 
-    def chat(self, user_input: str) -> str:
+    def chat(self, user_input: str, *, is_voice: bool = False) -> str:
         """Основной метод чата."""
         if not self.client:
             return "Ошибка: LLM клиент не инициализирован. Проверьте API ключ."
@@ -521,12 +536,41 @@ class ExistentialTherapistBot:
         messages = self._build_messages(user_input)
         
         try:
-            assistant_message = self._complete_text(
-                model=self.model,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=self.CHAT_MAX_TOKENS,
-            )
+            if is_voice:
+                # Regenerate the whole answer from the same context, never from
+                # the rejected answer and never as a separate spoken summary.
+                instructions = [
+                    "The user sent a voice message. Aim for 1200–1500 characters, "
+                    "with an absolute maximum of 1700 characters including spaces, "
+                    "punctuation and Markdown. Shorter is fine when appropriate. "
+                    "Express a complete thought; finish sentences and paragraphs naturally. "
+                    "Do not truncate the answer.",
+                    "The user sent a voice message. Write a complete new answer to the "
+                    "user's message, aiming for 900–1100 characters and at most 1400 "
+                    "characters including spaces, punctuation and Markdown. Shorter is "
+                    "fine. Finish all thoughts, sentences and paragraphs naturally; "
+                    "do not truncate.",
+                ]
+                for instruction in instructions:
+                    voice_messages = messages[:-1] + [
+                        {"role": "system", "content": instruction},
+                        messages[-1],
+                    ]
+                    assistant_message = self._complete_text(
+                        model=self.model, messages=voice_messages, temperature=0.7,
+                        max_tokens=self.CHAT_MAX_TOKENS,
+                    )
+                    if voice_response_fits(assistant_message):
+                        break
+                else:
+                    raise VoiceResponseTooLong()
+            else:
+                assistant_message = self._complete_text(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=self.CHAT_MAX_TOKENS,
+                )
             
             # Сохраняем в историю
             self.history.append(Message(role="user", content=user_input))
@@ -534,6 +578,8 @@ class ExistentialTherapistBot:
             
             return assistant_message
             
+        except VoiceResponseTooLong:
+            raise
         except Exception as e:
             return f"Ошибка: {e}"
     

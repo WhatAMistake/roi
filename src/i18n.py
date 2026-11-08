@@ -44,6 +44,8 @@ LOCALES: Dict[str, Dict[str, str]] = {
         "story_too_short": "Пожалуйста, опишите ситуацию подробнее (хотя бы пару предложений).",
         "story_too_long": "Ваша история очень подробная, но мне сложно охватить такой объём сразу. Пожалуйста, попробуйте выделить самое главное.",
         "voice_tts_failed": "<b>Не удалось сгенерировать голос:</b> {error}",
+        "voice_delivery_failed": "Не удалось создать или отправить голосовое сообщение. Попробуйте ещё раз.",
+        "voice_length_failed": "Не удалось подготовить полный ответ подходящей длины для озвучивания. Попробуйте ещё раз.",
         "technique_mindfulness": "Майндфулнес и заземляющие практики: короткие дыхательные и сенсорные упражнения для снижения тревоги.",
         "technique_epitaph": "Временная перспектива / эпитафия: представить жизнь с конца, чтобы прояснить ценности и приоритеты.",
         "technique_socratic": "Сократический диалог: направляющие вопросы для исследования предположений и противоречий.",
@@ -135,6 +137,8 @@ LOCALES: Dict[str, Dict[str, str]] = {
         "story_too_short": "Please describe the situation in more detail (at least a couple of sentences).",
         "story_too_long": "Your story is very detailed; please focus on the essential parts so I can respond effectively.",
         "voice_tts_failed": "<b>Failed to generate voice:</b> {error}",
+        "voice_delivery_failed": "Could not generate or send the voice message. Please try again.",
+        "voice_length_failed": "Could not prepare a complete response short enough for speech. Please try again.",
         "technique_mindfulness": "Mindfulness and grounding practices: short breath or sensory exercises to reduce anxiety.",
         "technique_epitaph": "Temporal perspective / epitaph: imagine life from the end to clarify values and priorities.",
         "technique_socratic": "Socratic dialogue: guided open questions to explore assumptions and contradictions.",
@@ -183,6 +187,18 @@ LOCALES: Dict[str, Dict[str, str]] = {
 
     }
 }
+
+
+# The existing consent covers chosen features; describe their additional storage
+# in /privacy without invalidating previously recorded decisions.
+LOCALES["ru"]["consent_details"] += (
+    "\nПри использовании музыки история отправленных композиций и музыкальных предложений "
+    "хранится отдельно под псевдонимом, чтобы не повторять треки. /reset её не удаляет.\n"
+)
+LOCALES["en"]["consent_details"] += (
+    "\nWhen music is used, track deliveries and invitation state are stored separately "
+    "under a pseudonym to avoid repeats. /reset does not delete this history.\n"
+)
 
 
 def t(code: str, key: str, **kwargs) -> str:

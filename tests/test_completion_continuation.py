@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from therapist_bot import ExistentialTherapistBot
+from therapist_bot import ExistentialTherapistBot, voice_response_fits
 
 
 def bot():
@@ -103,3 +103,33 @@ def test_short_word_overlap_and_unbroken_word_continuation():
     assert obj._join_continuation("It was sad", "sad but true") == " but true"
     assert obj._join_continuation("обрыв", "ается") == "ается"
     assert obj._join_continuation("A complete thought. ", "A complete thought. Next") == "Next"
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("x" * 1700, True), ("x" * 1701, False),
+    ("**" + "x" * 1696 + "**", True),
+    ("**" + "x" * 1697 + "**", False),
+    ("😀" * 850, True), ("😀" * 851, False),
+    ("&amp;" * 340, True), ("&amp;" * 341, False),
+])
+def test_voice_limit_counts_literal_markup_and_utf16(text, expected):
+    assert voice_response_fits(text) is expected
+
+
+def test_plain_text_chat_has_no_voice_instruction_or_limit():
+    obj = bot()
+    answer = "x" * 1800
+    obj._complete_text = MagicMock(return_value=answer)
+    assert obj.chat("hello") == answer
+    messages = obj._complete_text.call_args.kwargs["messages"]
+    assert all("1700" not in message["content"] for message in messages)
+    assert obj._complete_text.call_count == 1
+
+
+def test_voice_at_limit_is_accepted_without_regeneration():
+    obj = bot()
+    answer = "x" * 1699 + "."
+    obj._complete_text = MagicMock(return_value=answer)
+    assert obj.chat("hello", is_voice=True) == answer
+    assert obj._complete_text.call_count == 1
+    assert [message.content for message in obj.history] == ["hello", answer]

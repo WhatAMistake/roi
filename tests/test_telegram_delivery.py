@@ -797,7 +797,7 @@ def voice_message(user_id=7):
 
 def voice_therapist(started, release, outcome="success"):
     therapist = Therapist([])
-    therapist.chat = lambda text: "spoken answer"
+    therapist.chat = lambda text, *, is_voice=False: "spoken answer"
     def generate(text, output):
         started.set()
         release.wait(timeout=5)
@@ -850,6 +850,7 @@ async def test_voice_action_stops_on_generation_error(owner, monkeypatch, tmp_pa
         release.set()
     await task
     msg.answer_voice.assert_not_awaited()
+    assert msg.answer.await_args.args[0] == tb.t(tb.DEFAULT_LANG, "voice_delivery_failed")
     count = owner.bot.send_chat_action.await_count
     await asyncio.sleep(0.08)
     assert owner.bot.send_chat_action.await_count == count
@@ -897,7 +898,7 @@ async def test_voice_action_continues_through_fable_fallback(owner, monkeypatch,
     client = Mock()
     client.audio.speech.create.return_value.stream_to_file.side_effect = lambda path: Path(path).write_bytes(b"fable")
     therapist = Therapist([])
-    therapist.chat = lambda text: "spoken answer"
+    therapist.chat = lambda text, *, is_voice=False: "spoken answer"
     therapist.generate_speech = lambda text, path: tts.generate_speech(client, text, path)
     owner.sessions[7] = therapist
     msg = voice_message()
@@ -911,10 +912,107 @@ async def test_voice_action_continues_through_fable_fallback(owner, monkeypatch,
         release.set()
     await task
     client.audio.speech.create.assert_called_once_with(model="tts-1", voice="fable", input="spoken answer")
+    assert msg.answer.await_args_list[0].args[0] == "spoken answer"
     msg.answer_voice.assert_awaited_once()
     count = owner.bot.send_chat_action.await_count
     await asyncio.sleep(0.08)
     assert owner.bot.send_chat_action.await_count == count
+
+
+@pytest.mark.asyncio
+async def test_voice_retry_delivers_exact_literal_text_to_tts(owner, monkeypatch, tmp_path):
+    from therapist_bot import ExistentialTherapistBot
+    monkeypatch.chdir(tmp_path)
+    therapist = ExistentialTherapistBot(api_key="TEST", use_rag=False)
+    therapist.client = Mock()
+    previous = tb.Message(role="assistant", content="previous")
+    therapist.history = [previous]
+    answer = "  **Текст** &amp; <br>\n\n😀 Полная мысль.  "
+    therapist._complete_text = Mock(side_effect=["x" * 1701, answer])
+    def speech(text, path):
+        Path(path).write_bytes(b"voice")
+        return path
+    therapist.generate_speech = Mock(side_effect=speech)
+    owner.sessions[7] = therapist
+    msg = voice_message()
+
+    await owner._handle_chat(msg, "hello", is_voice=True)
+
+    assert therapist._complete_text.call_count == 2
+    first, retry = [call.kwargs["messages"] for call in therapist._complete_text.call_args_list]
+    assert "1200–1500" in first[-2]["content"] and "1700" in first[-2]["content"]
+    assert "900–1100" in retry[-2]["content"] and "1400" in retry[-2]["content"]
+    assert first[:-2] == retry[:-2] and first[-1] == retry[-1]
+    assert all(item.get("content") != "x" * 1701 for item in retry)
+    assert msg.answer.await_args_list[0].args[0] == answer
+    assert msg.answer.await_args_list[0].kwargs["parse_mode"] is None
+    assert therapist.generate_speech.call_args.args[0] == answer
+    assert [m.content for m in therapist.history] == ["previous", "hello", answer]
+    assert owner.user_recent_messages[7][-1]["content"] == answer
+    msg.answer_voice.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_voice_overflow_exhaustion_does_not_publish_or_update_history(owner):
+    from therapist_bot import ExistentialTherapistBot
+    therapist = ExistentialTherapistBot(api_key="TEST", use_rag=False)
+    therapist.client = Mock()
+    therapist.history = [tb.Message(role="assistant", content="previous")]
+    therapist._complete_text = Mock(return_value="**" + "x" * 1697 + "**")
+    therapist.generate_speech = Mock()
+    owner.sessions[7] = therapist
+    msg = voice_message()
+
+    await owner._handle_chat(msg, "hello", is_voice=True)
+
+    assert therapist._complete_text.call_count == 2
+    assert [m.content for m in therapist.history] == ["previous"]
+    assert 7 not in owner.user_recent_messages
+    therapist.generate_speech.assert_not_called()
+    msg.answer_voice.assert_not_awaited()
+    assert msg.answer.await_args.args[0] == tb.t(tb.DEFAULT_LANG, "voice_length_failed")
+
+
+@pytest.mark.asyncio
+async def test_voice_send_failure_notifies_without_exposing_provider_error(owner, monkeypatch, tmp_path, caplog):
+    monkeypatch.chdir(tmp_path)
+    started, release = threading.Event(), threading.Event()
+    release.set()
+    owner.sessions[7] = voice_therapist(started, release)
+    msg = voice_message()
+    msg.answer_voice.side_effect = RuntimeError("private speech and credentials")
+
+    await owner._handle_chat(msg, "hello", is_voice=True)
+
+    assert msg.answer.await_args_list[0].args[0] == "spoken answer"
+    assert msg.answer.await_args_list[-1].args[0] == tb.t(tb.DEFAULT_LANG, "voice_delivery_failed")
+    assert "private speech and credentials" not in caplog.text
+    assert not (tmp_path / "temp_audio" / "response_7.mp3").exists()
+
+
+@pytest.mark.asyncio
+async def test_clone_and_fable_failure_reports_error_safely(owner, monkeypatch, tmp_path, caplog):
+    import tts_service as tts
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TTS_PROVIDER", "clone")
+    monkeypatch.setattr(tts, "clone_speech", Mock(side_effect=RuntimeError("secret clone")))
+    client = Mock()
+    client.audio.speech.create.side_effect = RuntimeError("secret fable")
+    therapist = Therapist([])
+    therapist.chat = lambda text, *, is_voice=False: "private answer"
+    therapist.generate_speech = lambda text, path: tts.generate_speech(client, text, path)
+    owner.sessions[7] = therapist
+    msg = voice_message()
+
+    await owner._handle_chat(msg, "hello", is_voice=True)
+
+    assert msg.answer.await_args_list[0].args[0] == "private answer"
+    assert msg.answer.await_args_list[-1].args[0] == tb.t(tb.DEFAULT_LANG, "voice_delivery_failed")
+    assert client.audio.speech.create.call_args.kwargs["input"] == "private answer"
+    assert "secret clone" not in caplog.text
+    assert "secret fable" not in caplog.text
+    assert "private answer" not in caplog.text
+    msg.answer_voice.assert_not_awaited()
 
 
 @pytest.mark.asyncio

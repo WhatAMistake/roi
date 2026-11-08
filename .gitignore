@@ -52,6 +52,8 @@ data/*.json
 data/*.jsonl
 data/*.db
 data/*.sqlite
+data/*.sqlite-*
+data/*.db-*
 data/qdrant_storage/
 data/chromadb/
 data/code_backup/
@@ -64,6 +66,7 @@ temp_audio/
 tmp/
 *.tmp
 *.bak
+*.mp3
 
 # Tests / coverage
 .pytest_cache/
