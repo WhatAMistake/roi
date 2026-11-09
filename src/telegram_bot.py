@@ -262,7 +262,6 @@ def get_main_keyboard(lang: str = "ru") -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
     builder.add(KeyboardButton(text=t(lang, "button_assoc")))
     builder.add(KeyboardButton(text=t(lang, "button_analyze")))
-    builder.add(KeyboardButton(text=t(lang, "button_filmframe")))
     builder.add(KeyboardButton(text=t(lang, "button_help")))
     builder.adjust(2)
     return builder.as_markup(resize_keyboard=True)
@@ -1098,7 +1097,7 @@ class TelegramTherapistBot:
         lang = self.user_langs.get(user_id, DEFAULT_LANG)
         help_text = t(lang, "help")
 
-        await message.answer(help_text + ("\n/music — music" if lang == "en" else "\n/music — музыка"), parse_mode="HTML")
+        await message.answer(help_text, parse_mode="HTML")
     
     async def _handle_stats(self, message: types.Message):
         """Обработка /stats (только для админа)."""
