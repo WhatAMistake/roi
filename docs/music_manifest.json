@@ -1,30 +1,226 @@
 [
-  {"id":"death-01","category":"death","file":"","title":"","artist":"","description":""},
-  {"id":"death-02","category":"death","file":"","title":"","artist":"","description":""},
-  {"id":"death-03","category":"death","file":"","title":"","artist":"","description":""},
-  {"id":"death-04","category":"death","file":"","title":"","artist":"","description":""},
-  {"id":"death-05","category":"death","file":"","title":"","artist":"","description":""},
-  {"id":"death-06","category":"death","file":"","title":"","artist":"","description":""},
-  {"id":"death-07","category":"death","file":"","title":"","artist":"","description":""},
-  {"id":"freedom-01","category":"freedom","file":"","title":"","artist":"","description":""},
-  {"id":"freedom-02","category":"freedom","file":"","title":"","artist":"","description":""},
-  {"id":"freedom-03","category":"freedom","file":"","title":"","artist":"","description":""},
-  {"id":"freedom-04","category":"freedom","file":"","title":"","artist":"","description":""},
-  {"id":"freedom-05","category":"freedom","file":"","title":"","artist":"","description":""},
-  {"id":"freedom-06","category":"freedom","file":"","title":"","artist":"","description":""},
-  {"id":"freedom-07","category":"freedom","file":"","title":"","artist":"","description":""},
-  {"id":"isolation-01","category":"isolation","file":"","title":"","artist":"","description":""},
-  {"id":"isolation-02","category":"isolation","file":"","title":"","artist":"","description":""},
-  {"id":"isolation-03","category":"isolation","file":"","title":"","artist":"","description":""},
-  {"id":"isolation-04","category":"isolation","file":"","title":"","artist":"","description":""},
-  {"id":"isolation-05","category":"isolation","file":"","title":"","artist":"","description":""},
-  {"id":"isolation-06","category":"isolation","file":"","title":"","artist":"","description":""},
-  {"id":"isolation-07","category":"isolation","file":"","title":"","artist":"","description":""},
-  {"id":"meaninglessness-01","category":"meaninglessness","file":"","title":"","artist":"","description":""},
-  {"id":"meaninglessness-02","category":"meaninglessness","file":"","title":"","artist":"","description":""},
-  {"id":"meaninglessness-03","category":"meaninglessness","file":"","title":"","artist":"","description":""},
-  {"id":"meaninglessness-04","category":"meaninglessness","file":"","title":"","artist":"","description":""},
-  {"id":"meaninglessness-05","category":"meaninglessness","file":"","title":"","artist":"","description":""},
-  {"id":"meaninglessness-06","category":"meaninglessness","file":"","title":"","artist":"","description":""},
-  {"id":"meaninglessness-07","category":"meaninglessness","file":"","title":"","artist":"","description":""}
+  {
+    "id": "death-01",
+    "category": "death",
+    "file": "death/Bohren   Der Club Of Gore - Grave Wisdom.mp3",
+    "title": "Grave Wisdom",
+    "artist": "Bohren & Der Club Of Gore",
+    "description": "Мрачный, тягучий дарк-джаз о неизбежном"
+  },
+  {
+    "id": "death-02",
+    "category": "death",
+    "file": "death/Dirge   Death In Vegas.mp3",
+    "title": "Dirge",
+    "artist": "Death In Vegas",
+    "description": "Тяжелое, гипнотическое и неизбежное звучание"
+  },
+  {
+    "id": "death-03",
+    "category": "death",
+    "file": "death/John Frusciante – The Will To Death.mp3",
+    "title": "The Will To Death",
+    "artist": "John Frusciante",
+    "description": "Философское принятие конца и смирение"
+  },
+  {
+    "id": "death-04",
+    "category": "death",
+    "file": "death/Kate Bush – Army Dreams.mp3",
+    "title": "Army Dreams",
+    "artist": "Kate Bush",
+    "description": "Тревожное, сновидческое и немного жуткое"
+  },
+  {
+    "id": "death-05",
+    "category": "death",
+    "file": "death/manuel-barrueco-3-piezas-espanolas-no-2-passacaglia.mp3",
+    "title": "3 Piezas españolas: No. 2, Passacaglia",
+    "artist": "Manuel Barrueco",
+    "description": "Классическая испанская меланхолия"
+  },
+  {
+    "id": "death-06",
+    "category": "death",
+    "file": "death/Unknown-Future-VSN7.mp3",
+    "title": "Unknown Future",
+    "artist": "VSN7, ▽",
+    "description": "Зловещая, пульсирующая электроника"
+  },
+  {
+    "id": "death-07",
+    "category": "death",
+    "file": "death/Моя смерть   Аквариум.mp3",
+    "title": "Моя смерть",
+    "artist": "Аквариум",
+    "description": "Мистическое и созерцательное принятие судьбы"
+  },
+  {
+    "id": "freedom-01",
+    "category": "freedom",
+    "file": "freedom/01 - Onicks - Illuminati.mp3",
+    "title": "Illuminati",
+    "artist": "Onicks",
+    "description": "Атмосферный, немного таинственный электро-поп"
+  },
+  {
+    "id": "freedom-02",
+    "category": "freedom",
+    "file": "freedom/Bathory – Ring Of Gold.mp3",
+    "title": "Ring Of Gold",
+    "artist": "Bathory",
+    "description": "Эпическое, фолк-металлическое ощущение простора"
+  },
+  {
+    "id": "freedom-03",
+    "category": "freedom",
+    "file": "freedom/Placebo - Breathe Underwater (Slow).mp3",
+    "title": "Breathe Underwater (Slow)",
+    "artist": "Placebo",
+    "description": "Меланхоличное, эфирное парение и легкость"
+  },
+  {
+    "id": "freedom-04",
+    "category": "freedom",
+    "file": "freedom/ridgeclub - where am i supposed to go.mp3",
+    "title": "where am i supposed to go?",
+    "artist": "ridgeclub",
+    "description": "Мечтательный шугейз, поиск своего пути"
+  },
+  {
+    "id": "freedom-05",
+    "category": "freedom",
+    "file": "freedom/Sol Seppy - Love s Boy.mp3",
+    "title": "Love's Boy",
+    "artist": "Sol Seppy",
+    "description": "Хрупкое, эмоциональное и воздушное звучание"
+  },
+  {
+    "id": "freedom-06",
+    "category": "freedom",
+    "file": "freedom/Swetsi - летать.mp3",
+    "title": "летать",
+    "artist": "Swetsi",
+    "description": "Легкое русское инди, ощущение полета"
+  },
+  {
+    "id": "freedom-07",
+    "category": "freedom",
+    "file": "freedom/Птица   Аукцыон.mp3",
+    "title": "Птица",
+    "artist": "Аукцыон",
+    "description": "Поэтичный, авангардный русский рок о свободе"
+  },
+  {
+    "id": "isolation-01",
+    "category": "isolation",
+    "file": "isolation/08. The Cure - Prayers for rain.mp3",
+    "title": "Prayers for rain",
+    "artist": "The Cure",
+    "description": "Готическая тоска, дождь и одиночество"
+  },
+  {
+    "id": "isolation-02",
+    "category": "isolation",
+    "file": "isolation/Alice in Chains & Pearl Jam – Alone.mp3",
+    "title": "Alone",
+    "artist": "Alice in Chains & Pearl Jam",
+    "description": "Гранжевое чувство покинутости и отчуждения"
+  },
+  {
+    "id": "isolation-03",
+    "category": "isolation",
+    "file": "isolation/Disconnect-Kitty.mp3",
+    "title": "Disconnect",
+    "artist": "Kitty",
+    "description": "Цифровая изоляция и отстраненность"
+  },
+  {
+    "id": "isolation-04",
+    "category": "isolation",
+    "file": "isolation/Ex Re - The Dazzler.mp3",
+    "title": "The Dazzler",
+    "artist": "Ex:Re",
+    "description": "Хрупкое, интимное одиночество"
+  },
+  {
+    "id": "isolation-05",
+    "category": "isolation",
+    "file": "isolation/Ma mémoire sale   Louis Garrel.mp3",
+    "title": "Ma mémoire sale",
+    "artist": "Louis Garrel",
+    "description": "Французская грусть и воспоминания"
+  },
+  {
+    "id": "isolation-06",
+    "category": "isolation",
+    "file": "isolation/Suuns - Paralyzer.mp3",
+    "title": "Paralyzer",
+    "artist": "Suuns",
+    "description": "Холодный, парализующий ритм"
+  },
+  {
+    "id": "isolation-07",
+    "category": "isolation",
+    "file": "isolation/Перемотка - Первая встречная.mp3",
+    "title": "Встречная",
+    "artist": "Перемотка",
+    "description": "Ностальгическое русское инди"
+  },
+  {
+    "id": "meaninglessness-01",
+    "category": "meaninglessness",
+    "file": "meaninglessness/05 Your Body Betrays Your Degeneracy.mp3",
+    "title": "Your Body Betrays Your Degeneracy",
+    "artist": "Sea Power",
+    "description": "Странное, отстраненное звучание"
+  },
+  {
+    "id": "meaninglessness-02",
+    "category": "meaninglessness",
+    "file": "meaninglessness/08. The Stupid, The Proud.mp3",
+    "title": "The Stupid, The Proud",
+    "artist": "IAMX",
+    "description": "Сарказм, театральность и пустота"
+  },
+  {
+    "id": "meaninglessness-03",
+    "category": "meaninglessness",
+    "file": "meaninglessness/Another Ataxia.mp3",
+    "title": "Another",
+    "artist": "Ataxia",
+    "description": "Зацикленное, медитативное рок-звучание"
+  },
+  {
+    "id": "meaninglessness-04",
+    "category": "meaninglessness",
+    "file": "meaninglessness/Grey Unknown   Ambyion   Phelian.mp3",
+    "title": "Grey Unknown",
+    "artist": "Ambiyon & Phelian",
+    "description": "Серый, туманный эмбиент"
+  },
+  {
+    "id": "meaninglessness-05",
+    "category": "meaninglessness",
+    "file": "meaninglessness/nine-inch-nails-every-day-is-exactly-the-same-lp-version.mp3",
+    "title": "Every Day Is Exactly The Same",
+    "artist": "Nine Inch Nails",
+    "description": "Рутинная безысходность и апатия"
+  },
+  {
+    "id": "meaninglessness-06",
+    "category": "meaninglessness",
+    "file": "meaninglessness/the cure killing an arab.mp3",
+    "title": "Killing An Arab",
+    "artist": "The Cure",
+    "description": "Энергичный пост-панк с оттенком абсурда"
+  },
+  {
+    "id": "meaninglessness-07",
+    "category": "meaninglessness",
+    "file": "meaninglessness/uomi liorinkarmic.mp3",
+    "title": "uomi",
+    "artist": "liorinkarmic",
+    "description": "Абстрактный, экспериментальный эмбиент"
+  }
 ]
