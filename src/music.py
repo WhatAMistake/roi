@@ -22,8 +22,8 @@ ROOT = Path(__file__).resolve().parent.parent
 CATEGORIES = ("death", "freedom", "isolation", "meaninglessness")
 MAX_BYTES = 50 * 1024 * 1024
 LABELS = {
-    "ru": {"death": "Смерть", "freedom": "Свобода", "isolation": "Изоляция", "meaninglessness": "Бессмысленность"},
-    "en": {"death": "Death", "freedom": "Freedom", "isolation": "Isolation", "meaninglessness": "Meaninglessness"},
+    "ru": {"death": "Смерть", "freedom": "Свобода", "isolation": "Одиночество", "meaninglessness": "Бессмысленность"},
+    "en": {"death": "Death", "freedom": "Freedom", "isolation": "Loneliness", "meaninglessness": "Meaninglessness"},
 }
 
 
