@@ -5,7 +5,9 @@
     "file": "death/Bohren   Der Club Of Gore - Grave Wisdom.mp3",
     "title": "Grave Wisdom",
     "artist": "Bohren & Der Club Of Gore",
-    "description": "Мрачный, тягучий дарк-джаз о неизбежном"
+    "description": "Мрачный, тягучий дарк-джаз о неизбежном",
+    "caption_ru": "Мрачный, тягучий дарк-джаз о неизбежном",
+    "caption_en": "Brooding, slow-burning dark jazz about the inevitable."
   },
   {
     "id": "death-02",
@@ -13,7 +15,9 @@
     "file": "death/Dirge   Death In Vegas.mp3",
     "title": "Dirge",
     "artist": "Death In Vegas",
-    "description": "Тяжелое, гипнотическое и неизбежное звучание"
+    "description": "Тяжелое, гипнотическое и неизбежное звучание",
+    "caption_ru": "Тяжелое, гипнотическое и неизбежное звучание",
+    "caption_en": "Heavy, hypnotic sounds with a sense of inevitability."
   },
   {
     "id": "death-03",
@@ -21,7 +25,9 @@
     "file": "death/John Frusciante – The Will To Death.mp3",
     "title": "The Will To Death",
     "artist": "John Frusciante",
-    "description": "Философское принятие конца и смирение"
+    "description": "Философское принятие конца и смирение",
+    "caption_ru": "Философское принятие конца и смирение",
+    "caption_en": "Philosophical acceptance of the end, and resignation."
   },
   {
     "id": "death-04",
@@ -29,7 +35,9 @@
     "file": "death/Kate Bush – Army Dreams.mp3",
     "title": "Army Dreams",
     "artist": "Kate Bush",
-    "description": "Тревожное, сновидческое и немного жуткое"
+    "description": "Тревожное, сновидческое и немного жуткое",
+    "caption_ru": "Тревожное, сновидческое и немного жуткое",
+    "caption_en": "Uneasy, dreamlike, and a little eerie."
   },
   {
     "id": "death-05",
@@ -37,7 +45,9 @@
     "file": "death/manuel-barrueco-3-piezas-espanolas-no-2-passacaglia.mp3",
     "title": "3 Piezas españolas: No. 2, Passacaglia",
     "artist": "Manuel Barrueco",
-    "description": "Классическая испанская меланхолия"
+    "description": "Классическая испанская меланхолия",
+    "caption_ru": "Классическая испанская меланхолия",
+    "caption_en": "Classical Spanish melancholy."
   },
   {
     "id": "death-06",
@@ -45,7 +55,9 @@
     "file": "death/Unknown-Future-VSN7.mp3",
     "title": "Unknown Future",
     "artist": "VSN7, ▽",
-    "description": "Зловещая, пульсирующая электроника"
+    "description": "Зловещая, пульсирующая электроника",
+    "caption_ru": "Зловещая, пульсирующая электроника",
+    "caption_en": "Ominous, pulsating electronica."
   },
   {
     "id": "death-07",
@@ -53,7 +65,9 @@
     "file": "death/Моя смерть   Аквариум.mp3",
     "title": "Моя смерть",
     "artist": "Аквариум",
-    "description": "Мистическое и созерцательное принятие судьбы"
+    "description": "Мистическое и созерцательное принятие судьбы",
+    "caption_ru": "Мистическое и созерцательное принятие судьбы",
+    "caption_en": "A mystical, contemplative acceptance of fate."
   },
   {
     "id": "freedom-01",
@@ -61,7 +75,9 @@
     "file": "freedom/01 - Onicks - Illuminati.mp3",
     "title": "Illuminati",
     "artist": "Onicks",
-    "description": "Атмосферный, немного таинственный электро-поп"
+    "description": "Атмосферный, немного таинственный электро-поп",
+    "caption_ru": "Атмосферный, немного таинственный электро-поп",
+    "caption_en": "Atmospheric, slightly mysterious electropop."
   },
   {
     "id": "freedom-02",
@@ -69,7 +85,9 @@
     "file": "freedom/Bathory – Ring Of Gold.mp3",
     "title": "Ring Of Gold",
     "artist": "Bathory",
-    "description": "Эпическое, фолк-металлическое ощущение простора"
+    "description": "Эпическое, фолк-металлическое ощущение простора",
+    "caption_ru": "Эпическое, фолк-металлическое ощущение простора",
+    "caption_en": "An epic sense of open space, carried by folk metal."
   },
   {
     "id": "freedom-03",
@@ -77,7 +95,9 @@
     "file": "freedom/Placebo - Breathe Underwater (Slow).mp3",
     "title": "Breathe Underwater (Slow)",
     "artist": "Placebo",
-    "description": "Меланхоличное, эфирное парение и легкость"
+    "description": "Меланхоличное, эфирное парение и легкость",
+    "caption_ru": "Меланхоличное, эфирное парение и легкость",
+    "caption_en": "Melancholic, ethereal weightlessness and ease."
   },
   {
     "id": "freedom-04",
@@ -85,7 +105,9 @@
     "file": "freedom/ridgeclub - where am i supposed to go.mp3",
     "title": "where am i supposed to go?",
     "artist": "ridgeclub",
-    "description": "Мечтательный шугейз, поиск своего пути"
+    "description": "Мечтательный шугейз, поиск своего пути",
+    "caption_ru": "Мечтательный шугейз, поиск своего пути",
+    "caption_en": "Dreamy shoegaze and the search for your own path."
   },
   {
     "id": "freedom-05",
@@ -93,7 +115,9 @@
     "file": "freedom/Sol Seppy - Love s Boy.mp3",
     "title": "Love's Boy",
     "artist": "Sol Seppy",
-    "description": "Хрупкое, эмоциональное и воздушное звучание"
+    "description": "Хрупкое, эмоциональное и воздушное звучание",
+    "caption_ru": "Хрупкое, эмоциональное и воздушное звучание",
+    "caption_en": "Fragile, emotional, airy sounds."
   },
   {
     "id": "freedom-06",
@@ -101,7 +125,9 @@
     "file": "freedom/Swetsi - летать.mp3",
     "title": "летать",
     "artist": "Swetsi",
-    "description": "Легкое русское инди, ощущение полета"
+    "description": "Легкое русское инди, ощущение полета",
+    "caption_ru": "Легкое русское инди, ощущение полета",
+    "caption_en": "Light Russian indie with a feeling of flight."
   },
   {
     "id": "freedom-07",
@@ -109,7 +135,9 @@
     "file": "freedom/Птица   Аукцыон.mp3",
     "title": "Птица",
     "artist": "Аукцыон",
-    "description": "Поэтичный, авангардный русский рок о свободе"
+    "description": "Поэтичный, авангардный русский рок о свободе",
+    "caption_ru": "Поэтичный, авангардный русский рок о свободе",
+    "caption_en": "Poetic, avant-garde Russian rock about freedom."
   },
   {
     "id": "isolation-01",
@@ -117,7 +145,9 @@
     "file": "isolation/08. The Cure - Prayers for rain.mp3",
     "title": "Prayers for rain",
     "artist": "The Cure",
-    "description": "Готическая тоска, дождь и одиночество"
+    "description": "Готическая тоска, дождь и одиночество",
+    "caption_ru": "Готическая тоска, дождь и одиночество",
+    "caption_en": "Gothic longing, rain, and solitude."
   },
   {
     "id": "isolation-02",
@@ -125,7 +155,9 @@
     "file": "isolation/Alice in Chains & Pearl Jam – Alone.mp3",
     "title": "Alone",
     "artist": "Alice in Chains & Pearl Jam",
-    "description": "Гранжевое чувство покинутости и отчуждения"
+    "description": "Гранжевое чувство покинутости и отчуждения",
+    "caption_ru": "Гранжевое чувство покинутости и отчуждения",
+    "caption_en": "A grunge-tinged sense of abandonment and alienation."
   },
   {
     "id": "isolation-03",
@@ -133,7 +165,9 @@
     "file": "isolation/Disconnect-Kitty.mp3",
     "title": "Disconnect",
     "artist": "Kitty",
-    "description": "Цифровая изоляция и отстраненность"
+    "description": "Цифровая изоляция и отстраненность",
+    "caption_ru": "Цифровая изоляция и отстраненность",
+    "caption_en": "Digital isolation and detachment."
   },
   {
     "id": "isolation-04",
@@ -141,7 +175,9 @@
     "file": "isolation/Ex Re - The Dazzler.mp3",
     "title": "The Dazzler",
     "artist": "Ex:Re",
-    "description": "Хрупкое, интимное одиночество"
+    "description": "Хрупкое, интимное одиночество",
+    "caption_ru": "Хрупкое, интимное одиночество",
+    "caption_en": "Fragile, intimate solitude."
   },
   {
     "id": "isolation-05",
@@ -149,7 +185,9 @@
     "file": "isolation/Ma mémoire sale   Louis Garrel.mp3",
     "title": "Ma mémoire sale",
     "artist": "Louis Garrel",
-    "description": "Французская грусть и воспоминания"
+    "description": "Французская грусть и воспоминания",
+    "caption_ru": "Французская грусть и воспоминания",
+    "caption_en": "French melancholy and memories."
   },
   {
     "id": "isolation-06",
@@ -157,7 +195,9 @@
     "file": "isolation/Suuns – Paralyzer.mp3",
     "title": "Paralyzer",
     "artist": "Suuns",
-    "description": "Холодный, парализующий ритм"
+    "description": "Холодный, парализующий ритм",
+    "caption_ru": "Холодный, парализующий ритм",
+    "caption_en": "A cold, paralyzing rhythm."
   },
   {
     "id": "isolation-07",
@@ -165,7 +205,9 @@
     "file": "isolation/Перемотка - Первая встречная.mp3",
     "title": "Встречная",
     "artist": "Перемотка",
-    "description": "Ностальгическое русское инди"
+    "description": "Ностальгическое русское инди",
+    "caption_ru": "Ностальгическое русское инди",
+    "caption_en": "Nostalgic Russian indie."
   },
   {
     "id": "meaninglessness-01",
@@ -173,7 +215,9 @@
     "file": "meaninglessness/05 Your Body Betrays Your Degeneracy.mp3",
     "title": "Your Body Betrays Your Degeneracy",
     "artist": "Sea Power",
-    "description": "Странное, отстраненное звучание"
+    "description": "Странное, отстраненное звучание",
+    "caption_ru": "Странное, отстраненное звучание",
+    "caption_en": "An unusual, detached sound."
   },
   {
     "id": "meaninglessness-02",
@@ -181,7 +225,9 @@
     "file": "meaninglessness/08. The Stupid, The Proud.mp3",
     "title": "The Stupid, The Proud",
     "artist": "IAMX",
-    "description": "Сарказм, театральность и пустота"
+    "description": "Сарказм, театральность и пустота",
+    "caption_ru": "Сарказм, театральность и пустота",
+    "caption_en": "Sarcasm, theatricality, and emptiness."
   },
   {
     "id": "meaninglessness-03",
@@ -189,7 +235,9 @@
     "file": "meaninglessness/Another   Ataxia.mp3",
     "title": "Another",
     "artist": "Ataxia",
-    "description": "Зацикленное, медитативное рок-звучание"
+    "description": "Зацикленное, медитативное рок-звучание",
+    "caption_ru": "Зацикленное, медитативное рок-звучание",
+    "caption_en": "Looping, meditative rock sounds."
   },
   {
     "id": "meaninglessness-04",
@@ -197,7 +245,9 @@
     "file": "meaninglessness/Grey Unknown   Ambyion   Phelian.mp3",
     "title": "Grey Unknown",
     "artist": "Ambiyon & Phelian",
-    "description": "Серый, туманный эмбиент"
+    "description": "Серый, туманный эмбиент",
+    "caption_ru": "Серый, туманный эмбиент",
+    "caption_en": "Grey, misty ambient music."
   },
   {
     "id": "meaninglessness-05",
@@ -205,7 +255,9 @@
     "file": "meaninglessness/nine-inch-nails-every-day-is-exactly-the-same-lp-version.mp3",
     "title": "Every Day Is Exactly The Same",
     "artist": "Nine Inch Nails",
-    "description": "Рутинная безысходность и апатия"
+    "description": "Рутинная безысходность и апатия",
+    "caption_ru": "Рутинная безысходность и апатия",
+    "caption_en": "The hopelessness of routine and apathy."
   },
   {
     "id": "meaninglessness-06",
@@ -213,7 +265,9 @@
     "file": "meaninglessness/the cure killing an arab.mp3",
     "title": "Killing An Arab",
     "artist": "The Cure",
-    "description": "Энергичный пост-панк с оттенком абсурда"
+    "description": "Энергичный пост-панк с оттенком абсурда",
+    "caption_ru": "Энергичный пост-панк с оттенком абсурда",
+    "caption_en": "Energetic post-punk with a touch of the absurd."
   },
   {
     "id": "meaninglessness-07",
@@ -221,6 +275,8 @@
     "file": "meaninglessness/uomi   liorinkarmic.mp3",
     "title": "uomi",
     "artist": "liorinkarmic",
-    "description": "Абстрактный, экспериментальный эмбиент"
+    "description": "Абстрактный, экспериментальный эмбиент",
+    "caption_ru": "Абстрактный, экспериментальный эмбиент",
+    "caption_en": "Abstract, experimental ambient music."
   }
 ]

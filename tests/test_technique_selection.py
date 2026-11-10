@@ -24,7 +24,6 @@ def test_keywords_and_previous_hypothesis_never_prescribe_techniques():
     obj = bot()
     obj.last_dominant_given = "death"
     for text in ("суицид", "хочу умереть", "умер папа", "я одинок", "у меня паника"):
-        assert obj.select_technique(text) is None
         system = "\n".join(m["content"] for m in obj._build_messages(text) if m["role"] == "system")
         assert "ВОЗМОЖНАЯ ТЕХНИКА" not in system
         assert "Эпитафия" not in system
@@ -57,9 +56,7 @@ def test_reset_clears_hypotheses_and_history():
     obj.history.append(SimpleNamespace(role="user", content="private"))
     obj.last_dominant_given = "death"
     obj.last_secondary_given = "freedom"
-    obj.last_techniques.append("epitaph")
     obj.reset()
     assert obj.history == []
     assert obj.last_dominant_given is None
     assert obj.last_secondary_given is None
-    assert not obj.last_techniques

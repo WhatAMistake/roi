@@ -80,6 +80,7 @@ async def test_acceptance_opens_access_and_survives_restart(owner):
     await ConsentMiddleware(owner)(handler, event, {})
     assert owner._has_consent(7)
     assert "О чём" in event.message.answer.await_args.args[0]
+    assert t("ru", "welcome", name="Alex") in event.message.answer.await_args.args[0]
     assert "accepted_at" in owner.user_consents[7]
     owner.user_consents = {}
     owner._load_user_prefs()
@@ -156,9 +157,43 @@ async def test_document_available_before_acceptance_in_both_languages(owner):
         handler.assert_not_awaited()
         document = msg.answer_document.await_args.args[0]
         assert document.data.decode("utf-8") == t(lang, "consent_details")
+        assert CONSENT_VERSION in document.data.decode("utf-8")
         assert document.filename.endswith(f"{lang}.txt")
     assert not owner.user_consents
     assert not owner.prefs_path.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lang", ["ru", "en"])
+async def test_onboarding_does_not_depend_on_welcome_wording(owner, monkeypatch, lang):
+    from i18n import LOCALES
+
+    monkeypatch.setitem(LOCALES[lang], "welcome", "A changed invitation, {name}: TALK NOW?")
+    owner.user_langs[7] = lang
+    msg = message("/start", lang=lang)
+    await ConsentMiddleware(owner)(AsyncMock(), msg, {})
+    assert "TALK NOW?" not in msg.answer.await_args.args[0]
+    event = callback()
+    await ConsentMiddleware(owner)(AsyncMock(), event, {})
+    assert "A changed invitation, Alex: TALK NOW?" in event.message.answer.await_args.args[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lang", ["ru", "en"])
+async def test_start_after_consent_keeps_welcome_and_daily_settings(owner, lang):
+    owner.user_langs[7] = lang
+    await ConsentMiddleware(owner)(AsyncMock(), callback(), {})
+    owner._check_and_send_daily_meaning = AsyncMock()
+    msg = message("/start", lang=lang)
+    msg.from_user.username = None
+
+    async def start_handler(event, data):
+        await owner._handle_start(event)
+
+    await ConsentMiddleware(owner)(start_handler, msg, {})
+    assert msg.answer.await_args.args[0] == t(lang, "welcome", name="Alex")
+    assert owner.user_meaning_enabled[7] is True
+    owner._check_and_send_daily_meaning.assert_awaited_once_with(7, 7)
 
 
 @pytest.mark.asyncio

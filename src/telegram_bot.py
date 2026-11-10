@@ -963,19 +963,7 @@ class TelegramTherapistBot:
             therapist = self._get_therapist(user_id)
             
             # Формируем промпт для анализа стикера
-            prompt = f"""Клиент прислал стикер (эмодзи: {emoji}).
-            
-            Твоя задача:
-            1. Не пытайся угадать, что на картинке.
-            2. Дай очень короткий, теплый и эмпатичный отклик (1 предложение).
-            3. Просто покажи, что ты рядом и принимаешь эту эмоцию.
-            
-            Примеры:
-            - "Иногда слов действительно недостаточно."
-            - "Я здесь. Я слышу эту эмоцию."
-            - "Этот образ говорит о многом."
-            
-            Стиль: Ирвин Ялом. Тихий, принимающий, без пафоса."""
+            prompt = t(lang, "sticker_prompt", emoji=emoji)
             
             response = await asyncio.to_thread(therapist.generate_response, prompt, temporary_system_instruction=prompt, use_analysis_model=True)
             await message.answer(response)
@@ -1804,7 +1792,7 @@ class TelegramTherapistBot:
             remaining = int(self.silence_until[user_id] - now)
             if remaining > 0:
                 lang = self.user_langs.get(user_id, DEFAULT_LANG)
-                await message.answer(f"<i>Тишина... Осталось {remaining} сек.</i>", parse_mode="HTML")
+                await message.answer(t(lang, "silence_remaining", remaining=remaining), parse_mode="HTML")
                 return
             else:
                 del self.silence_until[user_id]

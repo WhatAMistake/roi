@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -16,7 +17,7 @@ from cryptography.fernet import Fernet
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import music
 import telegram_bot as tb
-from privacy import ConsentMiddleware
+from privacy import CONSENT_VERSION, ConsentMiddleware
 
 
 @pytest.fixture
@@ -25,6 +26,7 @@ def setup_music(tmp_path, monkeypatch):
     monkeypatch.setenv("ROI_MUSIC_DB", str(tmp_path / "music.sqlite"))
     owner = tb.TelegramTherapistBot.__new__(tb.TelegramTherapistBot)
     owner.user_langs = {7: "en"}
+    owner.user_consents = {7: {"version": CONSENT_VERSION, "accepted_at": "now"}}
     owner.user_recent_messages = {}
     owner.sessions = {}
     owner.user_locks = {}
@@ -41,7 +43,7 @@ def setup_music(tmp_path, monkeypatch):
         for i in range(7)
     ]
     monkeypatch.setattr(music, "catalogue", lambda *args: (tracks, tracks))
-    msg = SimpleNamespace(from_user=SimpleNamespace(id=7), answer=AsyncMock(),
+    msg = SimpleNamespace(from_user=SimpleNamespace(id=7), text="/music", answer=AsyncMock(),
                           edit_reply_markup=AsyncMock())
     return owner, feature, therapist, tracks, msg
 
@@ -52,6 +54,24 @@ def test_manifest_template_and_missing_library(tmp_path):
     assert len(configured) == 28 and not playable
     assert len({x["id"] for x in configured}) == 28
     assert all(sum(x["category"] == c for x in configured) == 7 for c in music.CATEGORIES)
+    for track in configured:
+        for lang, wrong_script in (("ru", r"[A-Za-z]"), ("en", r"[А-Яа-яЁё]")):
+            caption = track[f"caption_{lang}"]
+            assert isinstance(caption, str) and caption.strip()
+            assert not re.search(wrong_script, caption)
+            assert len(music.COLLECTION_INTROS[lang][track["category"]] + " " + caption) <= 1024
+
+
+def test_catalogue_preserves_optional_captions(tmp_path):
+    (tmp_path / "song.mp3").write_bytes(b"ID3test")
+    track = {"id": "one", "category": "isolation", "file": "song.mp3",
+             "title": "Title", "artist": "Artist", "description": "Internal",
+             "caption_ru": "Русская подпись.", "caption_en": "English caption."}
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps([track], ensure_ascii=False), encoding="utf-8")
+    configured, playable = music.catalogue(manifest, tmp_path)
+    assert configured == [track]
+    assert playable == [{**track, "path": (tmp_path / "song.mp3").resolve()}]
 
 
 @pytest.mark.parametrize("filename", ["../escape.mp3", "/outside.mp3", "C:/escape.mp3",
@@ -162,48 +182,41 @@ async def test_category_exhaustion_offers_available_other_category(setup_music, 
         feature.store().finish(7, track["id"], True)
     await feature.send(msg, 7, "death")
     buttons = msg.answer.await_args.kwargs["reply_markup"].inline_keyboard
-    assert [row[0].text for row in buttons] == ["Freedom"]
+    assert [button.text for row in buttons for button in row] == [
+        "Death", "Freedom", "Loneliness", "Meaninglessness"]
     assert "shared everything" in msg.answer.await_args.args[0]
 
 
 @pytest.mark.asyncio
-async def test_offer_consent_buttons_are_single_use_and_recorded(setup_music):
+async def test_category_buttons_are_single_use_and_recorded(setup_music):
     owner, feature, therapist, tracks, msg = setup_music
-    token = feature.store().button(7, "offer", "death", 7 * 86400)
+    token = feature.store().button(7)
     callback = SimpleNamespace(from_user=msg.from_user, message=msg,
-                               data=f"music:{token}:yes", answer=AsyncMock())
+                               data=f"music:{token}:death", answer=AsyncMock())
     await asyncio.gather(feature.callback(callback), feature.callback(callback))
     assert owner.bot.send_audio.await_count == 1
     assert feature.store().sent(7)
-    assert therapist.history[0].content == "Let’s listen."
+    assert therapist.history[0].content == "Death"
     assert "Artist" in therapist.history[-1].content
     assert callback.answer.await_args.args[0] == "This button has expired."
-    assert feature.store().button(7, "offer", "death", 7 * 86400) is None
-
-
-@pytest.mark.asyncio
-async def test_refusal_no_audio_and_cooldown_survives_session_reset(setup_music):
+def test_initiative_cooldown_survives_session_reset(setup_music):
     owner, feature, therapist, tracks, msg = setup_music
-    token = feature.store().button(7, "offer", "death", 7 * 86400)
-    callback = SimpleNamespace(from_user=msg.from_user, message=msg,
-                               data=f"music:{token}:no", answer=AsyncMock())
-    await feature.callback(callback)
-    owner.bot.send_audio.assert_not_awaited()
-    assert [m.content for m in therapist.history] == ["Not now.", "All right."]
+    assert feature.store().claim_initiative(7, 7 * 86400)
+    assert not feature.store().claim_initiative(7, 0)
     feature.store().reset_session(7)
-    assert feature.store().button(7, "offer", "death", 7 * 86400) is None
-    assert feature.store().button(7, "offer", "death", 0)
+    assert not feature.store().claim_initiative(7, 7 * 86400)
+    assert feature.store().claim_initiative(7, 0)
 
 
 def test_buttons_are_bound_to_user_session_and_expire(setup_music):
     owner, feature, therapist, tracks, msg = setup_music
     store = feature.store()
-    token = store.button(7, "choose")
+    token = store.button(7)
     assert store.consume(8, token, "death") is None
     assert store.consume(7, token, "no") is None
     store.reset_session(7)
     assert store.consume(7, token, "death") is None
-    token = store.button(7, "choose")
+    token = store.button(7)
     with store.connect() as db:
         db.execute("UPDATE music_button SET created=0 WHERE token=?", (token,))
     assert store.consume(7, token, "death") is None
@@ -248,10 +261,15 @@ async def test_offer_uses_safety_and_never_sends_without_consent(setup_music):
     therapist.model = "model"
     therapist._is_crisis_or_weight = lambda text: "crisis" in text
     therapist._complete_text = Mock(return_value='{"category":"death","confident":true,"crisis":false,"offer":true}')
+    owner.user_consents = {}
     await feature.maybe_offer(msg, therapist, 7)
     owner.bot.send_audio.assert_not_awaited()
-    assert msg.answer.await_args.kwargs["reply_markup"].inline_keyboard
-    therapist.history.extend(music.Message("user", "another") for _ in range(6))
+    therapist._complete_text.assert_not_called()
+    owner.user_consents[7] = {"version": CONSENT_VERSION, "accepted_at": "now"}
+    await feature.maybe_offer(msg, therapist, 7)
+    assert therapist._complete_text.call_count == 1
+    assert owner.bot.send_audio.await_count == 1
+    assert len(feature.store().sent(7)) == 1
     await feature.maybe_offer(msg, therapist, 7)
     assert therapist._complete_text.call_count == 1
     therapist.history[-1].content = "crisis"
@@ -261,7 +279,175 @@ async def test_offer_uses_safety_and_never_sends_without_consent(setup_music):
     assert feature.classify(therapist, initiative=True) is None
     feature.enabled = False
     await feature.maybe_offer(msg, therapist, 7)
-    owner.bot.send_audio.assert_not_awaited()
+    assert owner.bot.send_audio.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lang,expected", [
+    ("ru", "Тихая композиция для этого вечера."),
+    ("en", "A quiet song for this evening."),
+])
+@pytest.mark.parametrize("automatic", [False, True])
+async def test_localized_caption_in_real_delivery_paths(setup_music, monkeypatch, lang, expected, automatic):
+    owner, feature, therapist, tracks, msg = setup_music
+    owner.user_langs[7] = lang
+    track = {**tracks[0], "description": "Внутреннее описание",
+             "caption_ru": "  Тихая композиция для этого вечера.  ",
+             "caption_en": "  A quiet song for this evening.  "}
+    monkeypatch.setattr(music, "catalogue", lambda *args: ([track], [track]))
+    therapist._complete_text = Mock(return_value='{"category":"death","confident":true,"crisis":false,"offer":true}')
+    if automatic:
+        therapist.history = [music.Message("user", f"turn {i}") for i in range(6)]
+        therapist.client = object()
+        therapist.model = "model"
+        therapist._is_crisis_or_weight = lambda text: False
+        await feature.maybe_offer(msg, therapist, 7)
+        assert therapist._complete_text.call_count == 1  # Classification only.
+        msg.answer.assert_not_awaited()
+    else:
+        await feature.command(msg)
+        buttons = msg.answer.await_args.kwargs["reply_markup"].inline_keyboard
+        assert [button.text for row in buttons for button in row] == [
+            music.LABELS[lang][category] for category in music.CATEGORIES]
+        callback = SimpleNamespace(from_user=msg.from_user, message=msg,
+                                   data=buttons[0][0].callback_data, answer=AsyncMock())
+        await feature.callback(callback)
+        therapist._complete_text.assert_not_called()
+        expected = f"{music.COLLECTION_INTROS[lang]['death']} {expected}"
+    sent = owner.bot.send_audio.await_args.kwargs
+    assert sent["caption"] == expected
+    assert sent["title"] == track["title"] and sent["performer"] == track["artist"]
+    assert sent["parse_mode"] is None
+    assert feature.store().sent(7) == {track["id"]}
+    assert therapist.history[-1].content == f"{expected} [Artist — Title 0]"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lang,expected", [
+    ("ru", "Вот песня для тебя."),
+    ("en", "Here’s a song for you."),
+])
+@pytest.mark.parametrize("value", [None, "", "   ", 42])
+async def test_missing_caption_never_uses_description_or_other_language(setup_music, monkeypatch, lang, expected, value):
+    owner, feature, therapist, tracks, msg = setup_music
+    owner.user_langs[7] = lang
+    track = {**tracks[0], "description": "Внутреннее описание",
+             "caption_en" if lang == "ru" else "caption_ru": "Wrong language"}
+    if value is not None:
+        track[f"caption_{lang}"] = value
+    monkeypatch.setattr(music, "catalogue", lambda *args: ([track], [track]))
+    assert await feature.send(msg, 7, "death")
+    assert owner.bot.send_audio.await_args.kwargs["caption"] == f"{music.COLLECTION_INTROS[lang]['death']} {expected}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lang,expected", [
+    ("ru", "Вот песня для тебя."),
+    ("en", "Here’s a song for you."),
+])
+async def test_automatic_delivery_uses_localized_fallback(setup_music, monkeypatch, lang, expected):
+    owner, feature, therapist, tracks, msg = setup_music
+    owner.user_langs[7] = lang
+    track = {**tracks[0], "description": "Внутреннее описание",
+             "caption_en" if lang == "ru" else "caption_ru": "Wrong language"}
+    monkeypatch.setattr(music, "catalogue", lambda *args: ([track], [track]))
+    therapist.history = [music.Message("user", f"turn {i}") for i in range(6)]
+    therapist.client = object()
+    therapist.model = "model"
+    therapist._is_crisis_or_weight = lambda text: False
+    therapist._complete_text = Mock(return_value='{"category":"death","confident":true,"crisis":false,"offer":true}')
+    await feature.maybe_offer(msg, therapist, 7)
+    assert owner.bot.send_audio.await_args.kwargs["caption"] == expected
+    assert therapist._complete_text.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_callback_uses_current_language_preference(setup_music, monkeypatch):
+    owner, feature, therapist, tracks, msg = setup_music
+    track = {**tracks[0], "caption_ru": "Русская подпись.", "caption_en": "English caption."}
+    monkeypatch.setattr(music, "catalogue", lambda *args: ([track], [track]))
+    await feature.command(msg)
+    button = msg.answer.await_args.kwargs["reply_markup"].inline_keyboard[0][0]
+    owner.user_langs[7] = "ru"
+    callback = SimpleNamespace(from_user=msg.from_user, message=msg,
+                               data=button.callback_data, answer=AsyncMock())
+    await feature.callback(callback)
+    assert owner.bot.send_audio.await_args.kwargs["caption"] == "Из моей коллекции о смерти. Русская подпись."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lang,category,intro", [
+    ("ru", "death", "Из моей коллекции о смерти."),
+    ("ru", "freedom", "Из моей коллекции о свободе."),
+    ("ru", "isolation", "Из моей коллекции об одиночестве."),
+    ("ru", "meaninglessness", "Из моей коллекции о бессмысленности."),
+    ("en", "death", "From my collection on death."),
+    ("en", "freedom", "From my collection on freedom."),
+    ("en", "isolation", "From my collection on loneliness."),
+    ("en", "meaninglessness", "From my collection on meaninglessness."),
+])
+async def test_manual_callback_uses_selected_category_and_manifest_caption(
+        setup_music, monkeypatch, lang, category, intro):
+    owner, feature, therapist, tracks, msg = setup_music
+    owner.user_langs[7] = lang
+    manifest = json.loads((music.ROOT / "docs" / "music_manifest.json").read_text(encoding="utf-8"))
+    track = {**next(item for item in manifest if item["category"] == category), "path": Path(__file__)}
+    monkeypatch.setattr(music, "catalogue", lambda *args: ([track], [track]))
+    therapist._complete_text = Mock()
+    await feature.command(msg)
+    buttons = msg.answer.await_args.kwargs["reply_markup"].inline_keyboard
+    button = next(button for row in buttons for button in row if button.callback_data.endswith(f":{category}"))
+    callback = SimpleNamespace(from_user=msg.from_user, message=msg,
+                               data=button.callback_data, answer=AsyncMock())
+    await feature.callback(callback)
+    sent = owner.bot.send_audio.await_args.kwargs
+    assert sent["caption"] == f"{intro} {track[f'caption_{lang}']}"
+    assert not re.search(r"[A-Za-z]" if lang == "ru" else r"[А-Яа-яЁё]", sent["caption"])
+    assert sent["title"] == track["title"] and sent["performer"] == track["artist"]
+    therapist._complete_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("category", music.CATEGORIES)
+async def test_manual_and_automatic_sends_share_unique_history(setup_music, monkeypatch, category):
+    owner, feature, therapist, tracks, msg = setup_music
+    tracks = [{**track, "id": f"{category}-{i}", "category": category,
+               "caption_ru": f"Композиция {i}.", "caption_en": f"Song {i}."}
+              for i, track in enumerate(tracks)]
+    monkeypatch.setattr(music, "catalogue", lambda *args: (tracks, tracks))
+    await feature.command(msg)
+    buttons = msg.answer.await_args.kwargs["reply_markup"].inline_keyboard
+    button = next(button for row in buttons for button in row if button.callback_data.endswith(f":{category}"))
+    callback = SimpleNamespace(from_user=msg.from_user, message=msg,
+                               data=button.callback_data, answer=AsyncMock())
+    await feature.callback(callback)
+    therapist.history = [music.Message("user", f"turn {i}") for i in range(6)]
+    therapist.client = object()
+    therapist.model = "model"
+    therapist._is_crisis_or_weight = lambda text: False
+    therapist._complete_text = Mock(return_value=json.dumps(
+        {"category": category, "confident": True, "crisis": False, "offer": True}))
+    await feature.maybe_offer(msg, therapist, 7)
+    for _ in range(5):
+        assert await feature.send(msg, 7, category)
+    titles = [call.kwargs["title"] for call in owner.bot.send_audio.await_args_list]
+    assert len(titles) == len(set(titles)) == 7
+    feature.store().reset_session(7)
+    restarted = music.Music(owner)
+    assert restarted.store().sent(7) == {track["id"] for track in tracks}
+    assert not await restarted.send(msg, 7, category)
+    assert owner.bot.send_audio.await_count == 7
+
+
+def test_music_language_uses_saved_preference_and_bot_default(setup_music, monkeypatch):
+    owner, feature, therapist, tracks, msg = setup_music
+    monkeypatch.setattr(tb, "DEFAULT_LANG", "en")
+    owner.user_langs.clear()
+    assert feature.lang(7) == "en"
+    monkeypatch.setattr(tb, "DEFAULT_LANG", "ru")
+    assert feature.lang(7) == "ru"
+    owner.user_langs[7] = "en"
+    assert feature.lang(7) == "en"
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,20 @@ LABELS = {
     "ru": {"death": "Смерть", "freedom": "Свобода", "isolation": "Одиночество", "meaninglessness": "Бессмысленность"},
     "en": {"death": "Death", "freedom": "Freedom", "isolation": "Loneliness", "meaninglessness": "Meaninglessness"},
 }
+COLLECTION_INTROS = {
+    "ru": {
+        "death": "Из моей коллекции о смерти.",
+        "freedom": "Из моей коллекции о свободе.",
+        "isolation": "Из моей коллекции об одиночестве.",
+        "meaninglessness": "Из моей коллекции о бессмысленности.",
+    },
+    "en": {
+        "death": "From my collection on death.",
+        "freedom": "From my collection on freedom.",
+        "isolation": "From my collection on loneliness.",
+        "meaninglessness": "From my collection on meaninglessness.",
+    },
+}
 
 
 def catalogue(manifest, directory):
@@ -270,7 +284,9 @@ class Music:
         return self.store()
 
     def lang(self, uid):
-        return "ru" if self.owner.user_langs.get(uid, "ru") == "ru" else "en"
+        # Use the same saved preference and default as the rest of the bot.
+        from telegram_bot import DEFAULT_LANG
+        return "ru" if self.owner.user_langs.get(uid, DEFAULT_LANG) == "ru" else "en"
 
     def remember(self, uid, role, text):
         therapist = self.owner._get_therapist(uid)
@@ -384,13 +400,13 @@ class Music:
             if allow_choose:
                 await self.choose(message, uid, prefix)
             return False
-        caption = (("This song feels close to what we’ve been talking about." if lang == "en" else
-                    "Эта песня созвучна тому, о чём мы говорим.") if initiative else
-                   (f"From my collection on {LABELS[lang][category].lower()}." if lang == "en" else
-                    f"Из моей коллекции о данности «{LABELS[lang][category]}»."))
-        description = track.get("description")
-        if isinstance(description, str) and description.strip():
-            caption += " " + description.strip()[:200]
+        caption = track.get(f"caption_{lang}")
+        if not isinstance(caption, str) or not caption.strip():
+            caption = "Here’s a song for you." if lang == "en" else "Вот песня для тебя."
+        else:
+            caption = caption.strip()
+        if not initiative:
+            caption = f"{COLLECTION_INTROS[lang][category]} {caption}"
         try:
             fingerprint, file_id = self.store().file_id(track)
             audio = file_id or FSInputFile(track["path"])

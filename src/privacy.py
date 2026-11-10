@@ -2,49 +2,15 @@
 
 from datetime import datetime, timezone
 
-from i18n import t
-
-# Version bump: prior consent did not disclose unsolicited audio messages.
-CONSENT_VERSION = "2026-11-08-music-v2"
-
-# Supplement the existing i18n consent text without changing older disclosures.
-MUSIC_NOTICE = {
-    "ru": ("Рой может иногда сам присылать авторские музыкальные MP3, созвучные разговору, "
-           "без отдельного запроса перед каждой отправкой. Отключить инициативную музыку: "
-           "/music off; снова включить: /music on. Команда /music работает и при отключении."),
-    "en": ("Roy may occasionally send original MP3 tracks that fit the conversation, "
-           "without asking before each delivery. Turn automatic music off with /music off, "
-           "or back on with /music on. You can still use /music manually."),
-}
-MUSIC_DETAILS = {
-    "ru": ("Музыкальные сообщения: Рой может время от времени автоматически отправлять авторские "
-           "MP3 на основе темы беседы. Перед каждой отправкой отдельного подтверждения нет. "
-           "Для предотвращения повторов бот хранит в отдельной базе псевдонимизированный "
-           "идентификатор пользователя, ID выданных композиций и статусы отправки. "
-           "Также сохраняются настройки инициативной музыки и сведения о времени последней "
-           "попытки инициативной отправки. История музыки сохраняется после /reset: одна и та же "
-           "композиция не отправляется повторно. Ограничение инициативы по умолчанию — "
-           "одна отправка за сессию и не чаще раза в семь дней. Управление: /music off, "
-           "/music on; запрос музыки вручную — /music. Отправленные аудиофайлы также "
-           "обрабатываются Telegram в соответствии с его условиями."),
-    "en": ("Music messages: Roy may occasionally send original MP3 files automatically, "
-           "based on the conversation. There is no separate confirmation before each send. "
-           "To prevent repeats, a separate database stores a pseudonymous user identifier, "
-           "track IDs and delivery statuses. It also stores automatic-music preferences "
-           "and the last automatic delivery attempt time. Music history survives /reset: the same "
-           "track is not sent again. Automatic delivery defaults to once per conversation "
-           "session and no more than once every seven days. Controls: /music off, "
-           "/music on; request music manually with /music. Telegram also processes "
-           "delivered audio under its own terms."),
-}
+from i18n import CONSENT_VERSION, t
 
 
 def consent_notice(lang):
-    return t(lang, "consent_notice") + "\n\n" + MUSIC_NOTICE.get(lang, MUSIC_NOTICE["en"])
+    return t(lang, "consent_notice")
 
 
 def consent_details(lang):
-    return t(lang, "consent_details") + "\n\n" + MUSIC_DETAILS.get(lang, MUSIC_DETAILS["en"])
+    return t(lang, "consent_details")
 
 
 
@@ -107,7 +73,9 @@ class ConsentMiddleware:
                     return
                 from telegram_bot import get_main_keyboard
                 self.owner.user_states[user.id] = "chat"
-                await message.answer(t(lang, "consent_accepted"), reply_markup=get_main_keyboard(lang))
+                welcome = t(lang, "welcome", name=user.first_name or "")
+                await message.answer(t(lang, "consent_accepted") + "\n\n" + welcome,
+                                     reply_markup=get_main_keyboard(lang))
             try:
                 await message.edit_reply_markup(reply_markup=None)
             except Exception:
@@ -133,13 +101,9 @@ def has_consent(owner, user_id):
 async def show_consent(owner, message, lang):
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-    welcome = t(lang, "welcome", name=message.from_user.first_name or "")
-    # Preserve the introduction; invite the person to talk only after acceptance.
-    for ending in ("С чего начнём?", "So, where shall we start?"):
-        if welcome.endswith(ending):
-            welcome = welcome[:-len(ending)].rstrip()
+    intro = t(lang, "consent_intro", name=message.from_user.first_name or "")
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=t(lang, "consent_yes"), callback_data=f"consent:yes:{CONSENT_VERSION}")],
         [InlineKeyboardButton(text=t(lang, "consent_no"), callback_data=f"consent:no:{CONSENT_VERSION}")],
     ])
-    await message.answer(welcome + "\n\n" + consent_notice(lang), reply_markup=keyboard)
+    await message.answer(intro + "\n\n" + consent_notice(lang), reply_markup=keyboard)

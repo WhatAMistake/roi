@@ -13,11 +13,23 @@ No audio is included in the repository. Set `ROI_MUSIC_DIR` to change it. Exampl
 
 Fill `docs/music_manifest.json` (or set `ROI_MUSIC_MANIFEST` to a protected external
 JSON file). Each of its 28 entries has a permanent `id`, `category`, relative `file`,
-`title`, `artist` and optional `description`. Example:
+`title`, `artist`, an optional internal `description`, and optional `caption_ru`
+and `caption_en` strings. Example:
 
 ```json
-{"id":"isolation-01","category":"isolation","file":"isolation/first.mp3","title":"Title","artist":"Artist","description":"Quiet, distant atmosphere"}
+{"id":"isolation-01","category":"isolation","file":"isolation/first.mp3","title":"Title","artist":"Artist","description":"Quiet, distant atmosphere","caption_ru":"Тихая, отстранённая атмосфера.","caption_en":"A quiet, distant atmosphere."}
 ```
+
+`description` is an internal description and is never appended to the audio caption.
+Write each localized caption as a short, natural, slightly evocative text in Roy's
+voice (one or two sentences), without therapeutic advice or excessive poetry.
+Manual and automatic sends use the user's saved language preference (or the bot's
+default language). Manual sends prepend a localized introduction naming the chosen
+theme; automatic sends contain only the corresponding song caption. Missing, blank,
+or non-string captions use a short neutral phrase in that language; the other
+language and `description` are not used as substitutes. No LLM request is made for
+a caption. Keep the full manual caption, including its introduction, within
+Telegram's 1024-character limit.
 
 Keep IDs permanently attached to the same recordings, even when renaming files;
 never recycle IDs. Categories are `death`, `freedom`, `isolation`, `meaninglessness`.
@@ -34,9 +46,10 @@ metadata and the database is not encrypted. Changing/loss of the key changes use
 identities; do not rotate it without a deliberate migration. `/reset` only starts
 a new dialogue session, not a new music history.
 
-Set `ROI_MUSIC_INITIATIVE=false` to disable unsolicited invitations without disabling
-`/music`; `ROI_MUSIC_COOLDOWN_DAYS` defaults to 7. Only one invitation per session
-is allowed. Classification is conservative and an invitation requires agreement.
+Set `ROI_MUSIC_INITIATIVE=false` to disable automatic sends without disabling
+`/music`; `ROI_MUSIC_COOLDOWN_DAYS` defaults to 7. At most one automatic send per
+session is allowed. Classification is conservative, and current privacy consent
+is required; there is no separate confirmation before each automatic send.
 
 Deployment: upload the MP3s to `/opt/roi-media/music`, fill the manifest, set the
 environment variables, restrict permissions and restart the bot. No audio needs
@@ -48,9 +61,9 @@ ROI_MUSIC_DIR=/opt/roi-media/music python src/music.py --check
 python -m pytest tests/test_music.py
 ```
 
-Afterwards use `/music` in an already-consenting private Telegram chat; a missing
-or ambiguous context displays category buttons. This sends a real track and
-permanently consumes it for that user.
+Afterwards use `/music` in an already-consenting private Telegram chat and choose
+one of the four category buttons. This sends a real track and permanently consumes
+it for that user.
 
 Telegram does not support idempotency keys or an atomic transaction with SQLite.
 If Telegram rejects a send explicitly, its reservation is released. If the process

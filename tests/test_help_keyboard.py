@@ -22,7 +22,7 @@ async def test_help_uses_localized_text_without_appending_commands(lang):
     await bot._handle_help(message)
 
     message.answer.assert_awaited_once_with(t(lang, "help"), parse_mode="HTML")
-    assert t(lang, "help").count("/music") == 1
+    assert sum(line.startswith("/music ") for line in t(lang, "help").splitlines()) == 1
     assert "/shoot" in t(lang, "help")
 
 
