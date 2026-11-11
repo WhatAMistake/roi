@@ -1,8 +1,13 @@
 """Music tests use fake Telegram calls; no audio files or network sends are created."""
 
 import asyncio
+import hashlib
+import hmac
 import json
+import os
 import re
+import sqlite3
+import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -15,8 +20,9 @@ from aiogram.methods import SendAudio
 from cryptography.fernet import Fernet
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-import music
 import telegram_bot as tb
+from app.features.music import feature as music
+from therapist_bot import Message
 from privacy import CONSENT_VERSION, ConsentMiddleware
 
 
@@ -256,7 +262,7 @@ async def test_selection_sends_and_reset_preserves_delivery(setup_music):
 @pytest.mark.asyncio
 async def test_offer_uses_safety_and_never_sends_without_consent(setup_music):
     owner, feature, therapist, tracks, msg = setup_music
-    therapist.history = [music.Message("user", f"ordinary turn {i}") for i in range(6)]
+    therapist.history = [Message("user", f"ordinary turn {i}") for i in range(6)]
     therapist.client = object()
     therapist.model = "model"
     therapist._is_crisis_or_weight = lambda text: "crisis" in text
@@ -297,7 +303,7 @@ async def test_localized_caption_in_real_delivery_paths(setup_music, monkeypatch
     monkeypatch.setattr(music, "catalogue", lambda *args: ([track], [track]))
     therapist._complete_text = Mock(return_value='{"category":"death","confident":true,"crisis":false,"offer":true}')
     if automatic:
-        therapist.history = [music.Message("user", f"turn {i}") for i in range(6)]
+        therapist.history = [Message("user", f"turn {i}") for i in range(6)]
         therapist.client = object()
         therapist.model = "model"
         therapist._is_crisis_or_weight = lambda text: False
@@ -351,7 +357,7 @@ async def test_automatic_delivery_uses_localized_fallback(setup_music, monkeypat
     track = {**tracks[0], "description": "Внутреннее описание",
              "caption_en" if lang == "ru" else "caption_ru": "Wrong language"}
     monkeypatch.setattr(music, "catalogue", lambda *args: ([track], [track]))
-    therapist.history = [music.Message("user", f"turn {i}") for i in range(6)]
+    therapist.history = [Message("user", f"turn {i}") for i in range(6)]
     therapist.client = object()
     therapist.model = "model"
     therapist._is_crisis_or_weight = lambda text: False
@@ -421,7 +427,7 @@ async def test_manual_and_automatic_sends_share_unique_history(setup_music, monk
     callback = SimpleNamespace(from_user=msg.from_user, message=msg,
                                data=button.callback_data, answer=AsyncMock())
     await feature.callback(callback)
-    therapist.history = [music.Message("user", f"turn {i}") for i in range(6)]
+    therapist.history = [Message("user", f"turn {i}") for i in range(6)]
     therapist.client = object()
     therapist.model = "model"
     therapist._is_crisis_or_weight = lambda text: False
@@ -441,10 +447,9 @@ async def test_manual_and_automatic_sends_share_unique_history(setup_music, monk
 
 def test_music_language_uses_saved_preference_and_bot_default(setup_music, monkeypatch):
     owner, feature, therapist, tracks, msg = setup_music
-    monkeypatch.setattr(tb, "DEFAULT_LANG", "en")
     owner.user_langs.clear()
-    assert feature.lang(7) == "en"
-    monkeypatch.setattr(tb, "DEFAULT_LANG", "ru")
+    assert music.Music(owner, default_lang="en").lang(7) == "en"
+    feature = music.Music(owner, default_lang="ru")
     assert feature.lang(7) == "ru"
     owner.user_langs[7] = "en"
     assert feature.lang(7) == "en"
@@ -463,3 +468,155 @@ async def test_nonconsent_callback_routing_remains_gated(setup_music):
     await ConsentMiddleware(owner)(handler, event, {})
     handler.assert_not_awaited()
     owner._show_consent.assert_awaited_once()
+
+
+def test_default_and_relative_paths_are_unchanged(monkeypatch, tmp_path):
+    for name in ("ROI_MUSIC_DIR", "ROI_MUSIC_MANIFEST", "ROI_MUSIC_DB"):
+        monkeypatch.delenv(name, raising=False)
+    owner = SimpleNamespace(user_langs={})
+    feature = music.Music(owner)
+    root = Path(__file__).resolve().parents[1]
+    assert feature.directory == Path("/opt/roi-media/music")
+    assert feature.manifest == root / "docs" / "music_manifest.json"
+    assert feature.db_path == root / "data" / "music.sqlite"
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ROI_MUSIC_DIR", "private/audio")
+    monkeypatch.setenv("ROI_MUSIC_MANIFEST", "private/manifest.json")
+    monkeypatch.setenv("ROI_MUSIC_DB", "private/music.sqlite")
+    feature = music.Music(owner)
+    assert feature.directory == Path("private/audio")
+    assert feature.manifest == Path("private/manifest.json")
+    assert feature.db_path == Path("private/music.sqlite")
+    assert feature.existing_store() is None
+    assert not (tmp_path / "private").exists()
+
+
+def test_music_and_preferences_use_the_same_canonical_key(tmp_path, monkeypatch):
+    key = Fernet.generate_key()
+    monkeypatch.setenv("USER_PREFS_ENCRYPTION_KEY", f" '{key.decode().rstrip('=')}' ")
+    monkeypatch.setenv("ROI_MUSIC_DB", str(tmp_path / "music.sqlite"))
+    feature = music.Music(SimpleNamespace(user_langs={}))
+    assert tb.get_encryption_key() == key
+    assert feature.store().key == key
+    encrypted = tb.encrypt_data("private", key)
+    assert tb.decrypt_data(encrypted, feature.store().key) == "private"
+
+    monkeypatch.delenv("USER_PREFS_ENCRYPTION_KEY")
+    monkeypatch.setenv("ROI_MUSIC_DB", str(tmp_path / "no-key.sqlite"))
+    unavailable = music.Music(SimpleNamespace(user_langs={}))
+    with pytest.raises(ValueError):
+        unavailable.store()
+    assert not (tmp_path / "no-key.sqlite").exists()
+
+
+def test_telegram_composition_supplies_shared_key_and_default_language(tmp_path, monkeypatch):
+    key = Fernet.generate_key()
+    monkeypatch.setenv("ROI_MUSIC_DB", str(tmp_path / "music.sqlite"))
+    monkeypatch.setattr(tb, "Bot", lambda **kwargs: SimpleNamespace())
+    monkeypatch.setattr(tb, "get_encryption_key", lambda: key)
+    monkeypatch.setattr(tb, "DEFAULT_LANG", "ru")
+    monkeypatch.setattr(tb.TelegramTherapistBot, "_load_user_prefs",
+                        lambda self: setattr(self, "_prefs_loaded", True))
+    owner = tb.TelegramTherapistBot(telegram_token="unused")
+    assert isinstance(owner.music, music.Music)
+    assert owner.music.lang(7) == "ru"
+    monkeypatch.setattr(tb, "DEFAULT_LANG", "en")
+    assert owner.music.lang(7) == "en"
+    assert owner.music.store().key == key
+
+
+def test_existing_database_survives_restart_without_schema_changes(tmp_path):
+    key = Fernet.generate_key()
+    user_key = hmac.new(key, b"roi-music-v1:7", hashlib.sha256).hexdigest()
+    verifier = hmac.new(key, b"roi-music-key-check-v1", hashlib.sha256).hexdigest()
+    path = tmp_path / "existing.sqlite"
+    with sqlite3.connect(path) as db:
+        db.executescript("""
+            CREATE TABLE music_delivery (
+                user_key TEXT NOT NULL, track_id TEXT NOT NULL,
+                status TEXT NOT NULL, PRIMARY KEY(user_key, track_id));
+            CREATE TABLE music_user (
+                user_key TEXT PRIMARY KEY, session INTEGER NOT NULL DEFAULT 0,
+                offered_session INTEGER, last_offer REAL,
+                initiative_enabled INTEGER NOT NULL DEFAULT 1);
+            CREATE TABLE music_button (
+                token TEXT PRIMARY KEY, user_key TEXT NOT NULL, session INTEGER NOT NULL,
+                kind TEXT NOT NULL, category TEXT, created REAL NOT NULL, used INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE music_file (
+                track_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, file_id TEXT NOT NULL);
+            CREATE TABLE music_meta (name TEXT PRIMARY KEY, value TEXT NOT NULL);
+        """)
+        db.execute("INSERT INTO music_meta VALUES ('key_check', ?)", (verifier,))
+        db.executemany("INSERT INTO music_delivery VALUES (?, ?, ?)", [
+            (user_key, "sent-track", "sent"), (user_key, "uncertain-track", "reserved"),
+        ])
+        db.execute("INSERT INTO music_user VALUES (?, 3, 3, 1234, 0)", (user_key,))
+        db.execute("INSERT INTO music_file VALUES ('sent-track', 'fingerprint', 'cached-id')")
+        before = db.execute("SELECT type, name, sql FROM sqlite_master ORDER BY type, name").fetchall()
+
+    owner = SimpleNamespace(user_langs={})
+    feature = music.Music(owner, key_provider=lambda: key)
+    feature.db_path = path
+    store = feature.existing_store()
+    assert store.user(7) == user_key
+    assert store.sent(7) == {"sent-track"}
+    assert store.unavailable(7) == {"sent-track", "uncertain-track"}
+    assert not store.may_offer(7, 0)
+    assert store.reserve(7, [{"id": "sent-track"}, {"id": "uncertain-track"}]) is None
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT type, name, sql FROM sqlite_master ORDER BY type, name").fetchall() == before
+        assert db.execute("SELECT session, offered_session, last_offer, initiative_enabled FROM music_user").fetchone() == (3, 3, 1234, 0)
+        assert db.execute("SELECT file_id FROM music_file").fetchone() == ("cached-id",)
+
+    # A fresh interpreter must read the same pseudonymized history after restart.
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(music.ROOT)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["MUSIC_TEST_KEY"] = key.decode()
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import os,sys; from app.features.music.store import Store; "
+         "s=Store(sys.argv[1], os.environ['MUSIC_TEST_KEY']); "
+         "assert s.sent(7)=={'sent-track'}; "
+         "assert s.unavailable(7)=={'sent-track','uncertain-track'}; "
+         "assert not s.may_offer(7,0)", str(path)],
+        cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_entrypoints_and_compatibility_import_offline(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("[]", encoding="utf-8")
+    env = os.environ.copy()
+    env.update({
+        "PYTHONPATH": str(root),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "ROI_MUSIC_MANIFEST": str(manifest),
+        "ROI_MUSIC_DIR": str(tmp_path / "missing-audio"),
+        "ROI_MUSIC_DB": str(tmp_path / "unused.sqlite"),
+    })
+    commands = [
+        [sys.executable, str(root / "src" / "music.py"), "--check"],
+        [sys.executable, "-m", "app.features.music", "--check"],
+        [sys.executable, str(root / "src" / "telegram_bot.py"), "--help"],
+        [sys.executable, "-c",
+         "import sys; from app.features.music import Music; "
+         "assert 'telegram_bot' not in sys.modules"],
+    ]
+    results = [subprocess.run(command, cwd=tmp_path, env=env, capture_output=True,
+                              text=True, encoding="utf-8", timeout=30)
+               for command in commands]
+    for result in results:
+        assert result.returncode == 0, result.stderr
+    assert results[0].stdout == results[1].stdout
+    assert "death: 0/0 playable" in results[0].stdout
+    assert not (tmp_path / "unused.sqlite").exists()
+
+    import music as legacy
+    from app.features.music import Music
+    assert legacy.Music is Music
+    assert legacy.Store is music.Store

@@ -7,6 +7,7 @@ import asyncio
 import html
 import logging
 import re
+import sys
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -16,6 +17,11 @@ from typing import Optional
 from datetime import datetime
 from dotenv import load_dotenv
 load_dotenv()
+
+sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from app.security import get_encryption_key
 
 # Encryption for sensitive user data
 try:
@@ -31,41 +37,6 @@ def _is_encryption_key_configured() -> bool:
     if not raw:
         return False
     return bool(raw.strip().strip('"').strip("'").strip())
-
-
-def get_encryption_key() -> Optional[bytes]:
-    """Get and validate Fernet encryption key from environment without logging key material."""
-    key = os.getenv("USER_PREFS_ENCRYPTION_KEY")
-    if not key:
-        print("[ENCRYPTION] No USER_PREFS_ENCRYPTION_KEY found in environment")
-        return None
-
-    # Strip whitespace and quotes (both single and double)
-    key = key.strip().strip('"').strip("'").strip()
-    if not key:
-        print("[ENCRYPTION] Empty USER_PREFS_ENCRYPTION_KEY in environment")
-        return None
-
-    try:
-        # Validate key format (Fernet keys are 32-byte urlsafe base64-encoded, 44 chars with padding)
-        import base64
-        padding_needed = 4 - len(key) % 4
-        if padding_needed != 4:
-            key = key + '=' * padding_needed
-
-        decoded = base64.urlsafe_b64decode(key.encode('ascii'))
-        if len(decoded) == 32:
-            # Re-encode canonically so Fernet always receives a valid 44-byte urlsafe base64 key
-            canonical_key = base64.urlsafe_b64encode(decoded)
-            Fernet(canonical_key)
-            print("[ENCRYPTION] Key validated successfully")
-            return canonical_key
-        else:
-            print(f"[ENCRYPTION] Invalid key length: {len(decoded)} bytes (expected 32)")
-            return None
-    except Exception as e:
-        print(f"[ENCRYPTION] Invalid key format: {type(e).__name__}")
-        return None
 
 
 def encrypt_data(data: str, key: Optional[bytes]) -> str:
@@ -162,8 +133,8 @@ from therapist_bot import ExistentialTherapistBot, Message, VoiceResponseTooLong
 from lang_utils import detect_language
 from i18n import t
 from privacy import ConsentMiddleware, has_consent, show_consent
-from code_reviewer import UpdateCache
-from music import Music
+from code_reviewer import UpdateCache, _is_empty_changelog, _looks_technical
+from app.features.music import Music
 
 
 DEFAULT_LLM_MODEL = "deepseek-v4.1-flash"
@@ -171,6 +142,124 @@ logger = logging.getLogger(__name__)
 _MARKUP_TOKEN = re.compile(
     r"<[A-Za-z/!][^<>]*>|&(?:#[0-9]+|#[xX][0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]+);"
 )
+
+_UPDATE_SUMMARY_TECH = re.compile(
+    r"(?i)\b(?:переменн\w*|услови\w*|констант\w*|хеш\w*|хэш\w*|"
+    r"рефактор\w*|перемещен\w*|переименован\w*|if|elif|else)\b|"
+    r"\b\w+_\w+\b|(?:^|\s)(?:src|app|prompts)/"
+)
+
+
+def _valid_update_text(text):
+    if not isinstance(text, str) or not text.strip() or len(text) > 3500:
+        return False
+    empty_values = {"нет", "none", "null", "n/a", "no", "нет изменений",
+                    "нет пользовательских изменений", "no user-facing changes", "no changes"}
+    lines = [re.sub(r"^(?:[-*•]|—|\d+[.)])\s*", "", line.strip())
+             .casefold().strip(" \t.!…")
+             for line in text.splitlines() if line.strip()]
+    if not any(line and line not in empty_values and any(char.isalnum() for char in line)
+               for line in lines):
+        return False
+    return not any(0xD800 <= ord(char) <= 0xDFFF for char in text)
+
+
+def _update_review_state(pending, notes):
+    """Check both persisted analysis and the exact bilingual draft being shown."""
+    if pending is not None:
+        if not isinstance(pending, dict) or pending.get("status") != "review":
+            return "incomplete"
+        analysis = pending.get("analysis")
+        if not isinstance(analysis, dict):
+            return "incomplete"
+        count, fragments = analysis.get("fragment_count"), analysis.get("fragments")
+        if (type(count) is not int or count < 0 or not isinstance(fragments, dict)
+                or len(fragments) < count or (pending.get("paths") and count == 0)
+                or not all(isinstance(value, list) for value in fragments.values())
+                or not isinstance(analysis.get("findings"), list)
+                or not isinstance(analysis.get("missing"), list)
+                or not isinstance(analysis.get("failures"), list)
+                or analysis["missing"] or analysis["failures"]
+                or str(pending.get("reason", "")).startswith("Не удалось")):
+            return "incomplete"
+        if str(pending.get("reason", "")).startswith("Модель не нашла пользовательских изменений"):
+            return "no_changes"
+        if pending.get("notes") != notes:
+            return "invalid"
+    if not isinstance(notes, dict) or not all(
+        _valid_update_text(notes.get(lang)) for lang in ("ru", "en")
+    ):
+        return "invalid"
+    return "review"
+
+
+def _update_review_notice(state):
+    if state == "no_changes":
+        return "ℹ️ Пользовательских изменений не найдено. Рассылка не требуется; черновик сохранён."
+    if state == "invalid":
+        return "⚠️ Тексты RU и EN отсутствуют или некорректны. Рассылка недоступна; черновик сохранён."
+    return "⚠️ Анализ обновления не завершён. Черновик сохранён; повторите /updates."
+
+
+def _update_summary(pending, notes):
+    findings = (pending or {}).get("analysis", {}).get("findings", [])
+    descriptions = [item.get("description", "") for item in findings
+                    if isinstance(item, dict) and item.get("category") in {"feature", "fix", "change"}]
+    result = []
+    for candidates in (descriptions, (notes.get("ru") or "").splitlines()):
+        for description in candidates:
+            if not isinstance(description, str):
+                continue
+            text = re.sub(r"\s+", " ", description).strip()
+            text = re.sub(r"^(?:[-*•]|—|\d+[.)])\s+", "", text)
+            if (not text or _is_empty_changelog(text) or _looks_technical(text)
+                    or _UPDATE_SUMMARY_TECH.search(text)):
+                continue
+            # At most five escaped lines must fit together in one Telegram message.
+            text = text if len(text) <= 100 else text[:99].rstrip() + "…"
+            if text.casefold() not in {entry.casefold() for entry in result}:
+                result.append(text)
+            if len(result) == 5:
+                break
+        if result:
+            break
+    return result
+
+
+def _update_text_chunks(text, limit=3000):
+    """Escape before splitting, without cutting HTML entities or surrogate pairs."""
+    chunks, current, size, units = [], [], 0, 0
+    for char in text:
+        escaped = html.escape(char)
+        char_units = 2 if ord(char) > 0xFFFF else 1
+        if current and (size + len(escaped) > limit or units + char_units > limit):
+            chunks.append("".join(current))
+            current, size, units = [], 0, 0
+        current.append(escaped)
+        size += len(escaped)
+        units += char_units
+    if current:
+        chunks.append("".join(current))
+    return chunks
+
+
+def _update_preview_parts(pending, notes):
+    summary = _update_summary(pending, notes)
+    lines = ["📋 <b>Предпросмотр обновления</b>",
+             f"Изменено файлов: <b>{len((pending or {}).get('paths', []))}</b>",
+             "", "<b>Краткая сводка</b>"]
+    lines.extend("• " + html.escape(text) for text in summary)
+    if not summary:
+        lines.append("См. готовые тексты ниже.")
+    parts = ["\n".join(lines)]
+    for lang in ("ru", "en"):
+        for index, chunk in enumerate(_update_text_chunks(notes[lang])):
+            title = lang.upper() + (" — продолжение" if index else "")
+            parts.append(f"<b>Готовый текст {title}</b>\n{chunk}")
+    parts.append("Отправить?\n• <b>да</b> — разослать как есть\n"
+                 "• <b>править</b> — отредактировать RU, затем EN\n"
+                 "• <b>нет</b> — пропустить это обновление")
+    return parts
 
 
 class DeliveryError(RuntimeError):
@@ -244,12 +333,6 @@ def strip_markdown(text: str) -> str:
     # Remove any remaining "Анализирую..." if it wasn't followed by "Экзистенциальный отклик:"
     text = re.sub(r'Анализирую\.\.\.', '', text, flags=re.IGNORECASE)
     return text.strip()
-
-import sys
-# Import init_cache functionality for auto-updating after restart
-sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
-# Add workspace root so `app` package is importable when launched via run_telegram.py
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Default language when nothing is detected or user's Telegram locale is unsupported
 DEFAULT_LANG = os.getenv("DEFAULT_LANG", "en")
@@ -398,7 +481,7 @@ class TelegramTherapistBot:
         self._prefs_loaded = False
         self._load_user_prefs()
 
-        self.music = Music(self)
+        self.music = Music(self, key_provider=lambda: get_encryption_key(), default_lang=lambda: DEFAULT_LANG)
 
         # Время запуска бота для фильтрации старых сообщений
         import time
@@ -1294,80 +1377,37 @@ class TelegramTherapistBot:
 
     def _format_update_preview(self, changelogs: dict) -> str:
         """Build HTML preview of RU/EN changelogs for admin confirmation."""
-        preview_limit = 1200
-        changelog_ru = (changelogs or {}).get("ru") or ""
-        changelog_en = (changelogs or {}).get("en") or ""
-
-        def _clip(text: str) -> str:
-            if not text:
-                return "—"
-            safe = html.escape(text)
-            if len(text) > preview_limit:
-                return html.escape(text[:preview_limit]) + "..."
-            return safe
-
         cache = getattr(self, "update_cache", None)
-        pending = cache.pending() if isinstance(cache, UpdateCache) else None
-        details = []
-        if pending:
-            paths = pending.get("paths", [])
-            analysis = pending.get("analysis", {})
-            details = [
-                "<b>Технический обзор</b>",
-                f"Изменено файлов: <b>{len(paths)}</b>; строк: "
-                f"+{analysis.get('added', 0)} / −{analysis.get('removed', 0)}"
-                + (" (только проверенные файлы)" if analysis.get("missing") else ""),
-                "Компоненты: " + html.escape(", ".join(dict.fromkeys(
-                    item.get("component", "") for item in analysis.get("findings", [])
-                    if item.get("component")
-                )) or "—"),
-                html.escape(pending.get("reason", "")),
-            ]
-            labels = {
-                "feature": "Добавлено", "fix": "Исправлено", "change": "Изменено",
-                "internal": "Внутреннее", "uncertain": "Неоднозначное",
-            }
-            for category, label in labels.items():
-                items = [f"{item['description']} ({item['path']})"
-                         for item in analysis.get("findings", []) if item.get("category") == category]
-                details.append(f"{label}: " + html.escape("; ".join(items) if items else "—"))
-            if analysis.get("missing"):
-                details.append("Не проверены: " + html.escape(", ".join(analysis["missing"])))
-            if analysis.get("failures"):
-                details.append("Ошибки анализа: " + html.escape("; ".join(analysis["failures"])))
-            details.append("")
-        eligible = sum(1 for user_id in self.user_langs if self._has_consent(user_id))
-        return "\n".join([
-            "📋 <b>Предпросмотр обновления</b>",
-            "",
-            f"Получателей с согласием: <b>{eligible}</b>",
-            *details,
-            "",
-            "<b>Готовые пользовательские тексты</b>\n<b>RU:</b>",
-            _clip(changelog_ru),
-            "",
-            "<b>EN:</b>",
-            _clip(changelog_en),
-            "",
-            "Отправить?",
-            "• <b>да</b> — разослать как есть",
-            "• <b>править</b> — отредактировать RU, затем EN",
-            "• <b>нет</b> — пропустить это обновление",
-        ])
+        pending = (cache.pending() or {}) if isinstance(cache, UpdateCache) else None
+        state = _update_review_state(pending, changelogs)
+        if state != "review":
+            return _update_review_notice(state)
+        return "\n\n".join(_update_preview_parts(pending, changelogs))
 
-    async def _send_update_preview(self, chat_id: int, changelogs: dict) -> None:
+    async def _send_update_preview(self, chat_id: int, changelogs: dict) -> str:
         """Send update preview and put admin into confirmation state."""
-        self.pending_update_changelogs = {
-            "ru": (changelogs or {}).get("ru") or "",
-            "en": (changelogs or {}).get("en") or "",
-        }
+        cache = getattr(self, "update_cache", None)
+        pending = (cache.pending() or {}) if isinstance(cache, UpdateCache) else None
+        state = _update_review_state(pending, changelogs)
+        if state != "review":
+            self._clear_pending_update(chat_id)
+            await self.send_long_message(
+                chat_id, _update_review_notice(state),
+                reply_markup=get_main_keyboard(self.user_langs.get(chat_id, DEFAULT_LANG)),
+            )
+            return state
+        parts = _update_preview_parts(pending, changelogs)
+        combined = "\n\n".join(parts)
+        if len(combined) <= 4000 and len(combined.encode("utf-16-le")) // 2 <= 4000:
+            parts = [combined]
+        for index, part in enumerate(parts):
+            await self.send_long_message(
+                chat_id, part, parse_mode="HTML",
+                reply_markup=get_update_confirm_keyboard() if index == len(parts) - 1 else None,
+            )
+        self.pending_update_changelogs = {"ru": changelogs["ru"], "en": changelogs["en"]}
         self.user_states[chat_id] = "update_confirm"
-        await self.send_long_message(
-            chat_id,
-            self._format_update_preview(self.pending_update_changelogs),
-            parse_mode="HTML",
-            reply_markup=get_update_confirm_keyboard(),
-        )
+        return "review"
 
     async def _start_update_edit(self, message: types.Message) -> None:
         """Begin bilingual changelog editing: RU first, then EN."""
@@ -1403,11 +1443,19 @@ class TelegramTherapistBot:
             if pending and pending["status"] == "sending":
                 await message.answer("Рассылка уже подтверждена. Для повтора используйте /updates.")
                 return
+            pending = pending or {}
+        else:
+            pending = None
+        changelogs = getattr(self, "pending_update_changelogs", {})
+        review_state = _update_review_state(pending, changelogs)
+        if review_state != "review":
+            self._clear_pending_update(user_id)
+            await message.answer(
+                _update_review_notice(review_state),
+                reply_markup=get_main_keyboard(self.user_langs.get(user_id, DEFAULT_LANG)),
+            )
+            return
         if choice in _UPDATE_CONFIRM_YES:
-            changelogs = getattr(self, "pending_update_changelogs", {})
-            if not changelogs.get("ru") or not changelogs.get("en"):
-                await message.answer("Сначала заполните RU и EN через «править».")
-                return
             await self._process_update_broadcast()
             return
 
@@ -1420,7 +1468,7 @@ class TelegramTherapistBot:
             resolved = False
             if isinstance(cache, UpdateCache):
                 pending = cache.pending()
-                if pending and pending["status"] == "review":
+                if pending and _update_review_state(pending, changelogs) == "review":
                     cache.resolve(pending)
                     resolved = True
             self._clear_pending_update(user_id)
@@ -1449,17 +1497,27 @@ class TelegramTherapistBot:
             )
             return
 
-        edited = (text or "").strip()
-        if not edited:
+        cache = getattr(self, "update_cache", None)
+        pending = (cache.pending() or {}) if isinstance(cache, UpdateCache) else None
+        review_state = _update_review_state(pending, self.pending_update_changelogs)
+        if review_state != "review":
+            self._clear_pending_update(user_id)
             await message.answer(
-                "Текст не может быть пустым. Пришлите полный changelog или нажмите отмену.",
-                reply_markup=get_cancel_keyboard("ru"),
+                _update_review_notice(review_state),
+                reply_markup=get_main_keyboard(self.user_langs.get(user_id, DEFAULT_LANG)),
             )
             return
 
+        edited = (text or "").strip()
         if len(edited) > 3500:
             await message.answer(
                 "❌ Слишком длинный текст (максимум 3500 символов). Сократите и отправьте снова.",
+                reply_markup=get_cancel_keyboard("ru"),
+            )
+            return
+        if not _valid_update_text(edited):
+            await message.answer(
+                "Текст пустой или некорректный. Пришлите полный changelog или нажмите отмену.",
                 reply_markup=get_cancel_keyboard("ru"),
             )
             return
@@ -1504,7 +1562,7 @@ class TelegramTherapistBot:
             if not pending or pending["status"] not in ("review", "sending"):
                 return
             if pending["status"] == "review":
-                if not pending["notes"].get("ru") or not pending["notes"].get("en"):
+                if _update_review_state(pending, pending.get("notes")) != "review":
                     return
                 pending["recipients"] = {
                     str(user_id): {"status": "pending", "lang": self.user_langs.get(user_id, DEFAULT_LANG)}
@@ -2916,8 +2974,7 @@ class TelegramTherapistBot:
                 if pending["status"] == "sending":
                     await self._process_update_broadcast()
                     return "sending"
-                await self._send_update_preview(self.admin_id, pending["notes"])
-                return "review"
+                return await self._send_update_preview(self.admin_id, pending["notes"])
         except Exception as exc:
             print(f"[UPDATE CHECK] Failed: {type(exc).__name__}")
             return "error"

@@ -381,7 +381,7 @@ def _extract_completion_text(response) -> str:
                 parts.append(str(part.get("text") or part.get("content") or ""))
         content = "".join(parts)
 
-    return (content or "").strip()
+    return content.strip() if isinstance(content, str) else ""
 
 
 def _strip_model_thoughts(text: str) -> str:
@@ -493,8 +493,11 @@ def generate_changelog_with_llm(
         findings.extend(_model_json(
             therapist_bot, _ANALYSIS_SYSTEM, fragment["diff"],
             lambda parsed: _validate_findings(parsed, fragment),
+            use_analysis_model=True,
         ))
-    return _make_release_notes(therapist_bot, findings, change["existing_commands"]).get(lang, "")
+    return _make_release_notes(
+        therapist_bot, _group_findings(findings), change["existing_commands"]
+    ).get(lang, "")
 
 
 def generate_user_friendly_fallback(analysis: Dict, lang: str = "ru") -> str:
@@ -712,23 +715,22 @@ def split_update_diff(change_set: dict, limit: int = _UPDATE_FRAGMENT_LIMIT) -> 
             pieces = []
             for line in hunk[1:]:
                 if len(line) <= capacity:
-                    pieces.append(line)
+                    pieces.append((line, False))
                 else:
                     # Long physical lines have no meaningful line boundary.
-                    # Label segments so the model does not mistake them for
-                    # independent changes.
+                    # Track segments so they are not repeated as boundary context.
                     marker, body = line[:1], line[1:]
                     total = (len(body) + capacity - 1) // capacity
                     for index in range(total):
-                        pieces.append(
-                            marker + body[index * capacity:(index + 1) * capacity]
-                        )
+                        pieces.append((
+                            marker + body[index * capacity:(index + 1) * capacity], True
+                        ))
             batches, batch, size = [], [], len(prefix)
-            for piece in pieces:
+            for piece, is_segment in pieces:
                 if batch and size + len(piece) + 1 > target:
                     batches.append(batch)
                     batch, size = [], len(prefix)
-                batch.append(piece)
+                batch.append((piece, is_segment))
                 size += len(piece) + 1
             if batch:
                 batches.append(batch)
@@ -736,10 +738,11 @@ def split_update_diff(change_set: dict, limit: int = _UPDATE_FRAGMENT_LIMIT) -> 
                 before = batches[index - 1][-1:] if index else []
                 after = batches[index + 1][:1] if index + 1 < len(batches) else []
                 # Do not duplicate a section of a very long physical line.
-                before = [line for line in before if len(line) <= 160]
-                after = [line for line in after if len(line) <= 160]
+                before = [line for line, segment in before if not segment and len(line) <= 160]
+                after = [line for line, segment in after if not segment and len(line) <= 160]
                 fragments.append({"path": file["path"],
-                                  "diff": prefix + "\n".join(before + batch + after)})
+                                  "diff": prefix + "\n".join(
+                                      before + [line for line, _ in batch] + after)})
             count = len(fragments) - first_fragment
             if count > 1:
                 for index in range(count):
@@ -750,50 +753,84 @@ def split_update_diff(change_set: dict, limit: int = _UPDATE_FRAGMENT_LIMIT) -> 
     return fragments
 
 
-def _model_json(therapist, system: str, content: str, validator, attempts: int = 3):
+class _InvalidModelData(ValueError):
+    """A validator's fixed, non-sensitive diagnostic."""
+
+
+class _ModelRequestError(ValueError):
+    """A sanitized model request or response failure."""
+
+
+def _model_json(therapist, system: str, content: str, validator, attempts: int = 3,
+                *, use_analysis_model: bool = False):
     if not therapist or not getattr(therapist, "client", None):
-        raise RuntimeError("LLM client unavailable")
+        raise _ModelRequestError("LLM client unavailable")
+    model = (getattr(therapist, "analysis_model", None) if use_analysis_model else None) or therapist.model
     last_error = None
-    for _ in range(attempts):
+    for _ in range(max(1, min(attempts, 3))):
         try:
             response = therapist.client.chat.completions.create(
-                model=therapist.model,
+                model=model,
                 messages=[{"role": "system", "content": system},
                           {"role": "user", "content": content}],
                 temperature=0.1, max_tokens=1600, timeout=30.0,
             )
+        except TimeoutError:
+            last_error = "TimeoutError: LLM request timed out"
+            continue
+        except Exception:
+            # Provider exceptions may include prompts, credentials or response bodies.
+            last_error = "LLM request failed"
+            continue
+        try:
+            if not getattr(response, "choices", None):
+                raise _InvalidModelData("Model returned no choices")
             if getattr(response.choices[0], "finish_reason", None) not in (None, "stop"):
-                raise ValueError("Incomplete model response")
+                raise _InvalidModelData("Incomplete model response")
             raw = _extract_completion_text(response)
-            parsed = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip()))
+            if not raw:
+                raise _InvalidModelData("Empty or invalid model response text")
+            try:
+                parsed = json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", raw))
+            except json.JSONDecodeError:
+                raise _InvalidModelData("Invalid JSON response") from None
             return validator(parsed)
-        except Exception as exc:
-            last_error = exc
-    raise last_error
+        except _InvalidModelData as exc:
+            last_error = f"ValueError: {exc}"
+        except Exception:
+            last_error = "ValueError: Invalid model response data"
+    raise _ModelRequestError(last_error) from None
 
 
 def _validate_findings(parsed, fragment):
     if not isinstance(parsed, dict) or not isinstance(parsed.get("findings"), list):
-        raise ValueError("Missing findings")
+        raise _InvalidModelData("Missing or invalid findings list")
     result = []
-    if not parsed["findings"]:
-        raise ValueError("Fragment has no classified changes")
+    changed_lines = [line for line in fragment["diff"].splitlines()[3:]
+                     if line.startswith(("+", "-"))]
     for item in parsed["findings"]:
-        if not isinstance(item, dict) or item.get("category") not in {
+        if (not isinstance(item, dict) or not isinstance(item.get("category"), str)
+                or item["category"] not in {
             "feature", "fix", "change", "internal", "uncertain",
-        }:
-            raise ValueError("Invalid finding category")
+        }):
+            raise _InvalidModelData("Invalid finding category")
         if any(not isinstance(item.get(key), str) or not item[key].strip()
                for key in ("component", "description", "evidence")):
-            raise ValueError("Finding lacks evidence")
+            raise _InvalidModelData("Finding has missing or invalid fields")
         evidence = item["evidence"].strip()
         # Evidence must be a literal changed line or substring, not a filename
         # or an invented description.
-        changed_lines = [line[1:] for line in fragment["diff"].splitlines()[3:]
-                         if line.startswith(("+", "-"))]
-        if not any(evidence in line and len(evidence) >= min(4, len(line.strip()))
-                   for line in changed_lines if line.strip()):
-            raise ValueError("Evidence not found in changed lines")
+        def matches(line):
+            body = line[1:]
+            # Models sometimes include the unified-diff +/- marker in a quote.
+            quoted = evidence[1:] if evidence.startswith(line[0]) else ""
+            minimum = min(4, len(body.strip()))
+            return bool(body.strip()) and (
+                (len(evidence) >= minimum and evidence in body)
+                or (len(quoted) >= minimum and bool(quoted) and body.startswith(quoted))
+            )
+        if not any(matches(line) for line in changed_lines):
+            raise _InvalidModelData("Evidence not found in changed lines")
         result.append({key: item[key].strip()[:500] for key in
                        ("category", "component", "description", "evidence")})
         result[-1]["path"] = fragment["path"]
@@ -813,23 +850,133 @@ _ANALYSIS_SYSTEM = (
     "only part of a hunk or a single long line; do not infer "
     "that a capability is new merely because its old version is in another fragment. "
     "Use Russian for descriptions, no source code except the evidence field. "
-    "Cover the fragment's changed lines, including internal changes; if the effect cannot "
-    "be determined, classify it as uncertain rather than omitting it."
+    "Cover meaningful changed lines, including internal changes; if the effect cannot "
+    "be determined, classify it as uncertain. Return {\"findings\":[]} when the fragment "
+    "has no meaningful changes, for example if it contains only context or whitespace."
 )
+
+
+def _finding_category(item):
+    """Only reclassify descriptions that explicitly state a small code-only edit."""
+    category = item["category"]
+    if category not in {"feature", "fix", "change"}:
+        return category
+    description = item["description"].strip().rstrip(".").casefold()
+    name = r"[`'\"]?[\w.]+[`'\"]?"
+    if re.fullmatch(
+        rf"(?:переименован[аоы]? переменн(?:ая|ую|ой) {name}"
+        rf"(?: (?:в|на) {name})?|renamed variable {name}(?: to {name})?)",
+        description,
+    ):
+        return "internal"
+    if description in {
+        "изменено условие оператора if", "изменено условие в операторе if",
+        "изменено условие ветвления", "changed the if condition", "changed a condition",
+    }:
+        # An isolated condition can affect users, but its effect is not stated.
+        return "uncertain"
+    return category
+
+
+def _finding_signature(item):
+    """Conservative lexical equivalence, not an inference of functional effects."""
+    words = re.findall(r"[-+]?\d+(?:\.\d+)*|[^\W\d]+(?:_[\w]+)*", item["description"].casefold())
+    normalized = []
+    for word in words:
+        if re.fullmatch(r"ошиб(?:ка|ки|ке|ку|кой|ок)", word):
+            word = "ошибк"
+        elif re.fullmatch(r"[а-яё]{5,}", word):
+            # Handle common Russian inflections without a general-purpose
+            # stemmer that might conflate unrelated changes.
+            word = re.sub(r"(?:ами|ями|ого|ему|ому|ыми|ими|ая|ое|ые|ой|ей|ую|"
+                          r"а|ы|и|е|у)$", "", word)
+        normalized.append(word)
+    boilerplate = {
+        "feature": {"добавлен", "added"},
+        "fix": {"исправлен", "fixed"},
+        "change": {"изменен", "изменён", "обновлен", "обновлён", "changed", "updated"},
+    }.get(item["category"], set())
+    return tuple(word for word in normalized if word not in boilerplate)
+
+
+def _group_findings(findings):
+    """Group only sufficiently equivalent findings from the same file/category."""
+    grouped = []
+    candidates = {}
+    for original in findings:
+        item = dict(original)
+        item["path"] = item["path"].replace("\\", "/")
+        # A repository-relative path is stable and distinguishes same-named
+        # files. Model labels are kept as provenance, not as component names.
+        item["component"] = item["path"]
+        item["category"] = _finding_category(item)
+        item["sources"] = [dict(original)]
+        signature = _finding_signature(item)
+        key = (item["path"], item["category"], signature)
+        match = None
+        for previous in candidates.get(key, []):
+            context = {label.casefold() for label in _component_context(item)}
+            previous_context = {label.casefold() for label in _component_context(previous)}
+            if context and previous_context and context.isdisjoint(previous_context):
+                # Same wording can refer to different subsystems of one file.
+                continue
+            # A generic label alone is not enough to identify a change: it
+            # could refer to different lines in the same file. Exact duplicate
+            # descriptions still collapse, retaining all their source evidence.
+            same_evidence = original["evidence"] == previous["evidence"]
+            same_description = (
+                original["description"].strip().casefold()
+                == previous["description"].strip().casefold()
+            )
+            if same_evidence or same_description or len(signature) >= 3:
+                match = previous
+                break
+        if match is None:
+            grouped.append(item)
+            candidates.setdefault(key, []).append(item)
+        elif original not in match["sources"]:
+            match["sources"].append(dict(original))
+    collisions = {}
+    for item in grouped:
+        key = (item["path"], item["category"], item["description"].strip().casefold())
+        collisions.setdefault(key, []).append(item)
+    for items in collisions.values():
+        if len(items) > 1:
+            for item in items:
+                labels = _component_context(item)
+                if labels:
+                    item["description"] += " (" + ", ".join(labels) + ")"
+    return grouped
+
+
+def _component_context(item):
+    """Keep functional labels, but do not resend file-name aliases as context."""
+    path = item["path"]
+    filename = path.rsplit("/", 1)[-1]
+    aliases = {path.casefold(), filename.casefold(), filename.rsplit(".", 1)[0].casefold()}
+    labels = []
+    for source in item.get("sources", []):
+        label = source["component"].strip().replace("\\", "/")
+        parts = re.split(r"\s+(?:—|–|-)\s+|\s*:\s+", label, maxsplit=1)
+        if parts[0].casefold() in aliases:
+            label = parts[1].strip() if len(parts) > 1 else ""
+        if label and label.casefold() not in {entry.casefold() for entry in labels}:
+            labels.append(label)
+    return labels
 
 
 def _validate_notes(parsed):
     if not isinstance(parsed, dict):
-        raise ValueError("Invalid release notes")
+        raise _InvalidModelData("Invalid release notes")
     if parsed.get("no_user_changes") is True:
         return {"ru": "", "en": ""}
     notes = {}
     for lang in ("ru", "en"):
         if not isinstance(parsed.get(lang), str):
-            raise ValueError("Missing language")
+            raise _InvalidModelData("Missing or invalid release note language")
         notes[lang] = _sanitize_changelog(parsed[lang])
         if not notes[lang]:
-            raise ValueError("Invalid changelog")
+            raise _InvalidModelData("Empty or unsafe release note")
     return notes
 
 
@@ -839,8 +986,15 @@ def _make_release_notes(therapist, findings, existing_commands=()):
         return {"ru": "", "en": ""}
     # Evidence is not sent to users or to the synthesis stage. The model gets
     # only reviewed classifications, not source code.
-    payload = [{key: item[key] for key in ("category", "component", "description")}
-               for item in visible]
+    payload = []
+    for item in visible:
+        entry = {key: item[key] for key in ("category", "component", "description")}
+        # Component labels can contain functional context absent from the
+        # description. Preserve it for synthesis without sending evidence.
+        labels = _component_context(item)
+        if labels:
+            entry["component_context"] = labels
+        payload.append(entry)
     def validate(parsed):
         notes = _validate_notes(parsed)
         for text in notes.values():
@@ -848,9 +1002,9 @@ def _make_release_notes(therapist, findings, existing_commands=()):
                 if re.search(r"(?i)\bnew\b|нов(?:ая|ые|ый|ое|ую)", line):
                     for command in existing_commands:
                         if re.search(rf"/{re.escape(command)}(?!\w)", line, re.IGNORECASE):
-                            raise ValueError("Existing command described as new")
+                            raise _InvalidModelData("Existing command described as new")
                 if re.search(r"(?i)/(?:admin|recover|saveall|dump|dumpall)(?!\w)", line):
-                    raise ValueError("Admin command in public notes")
+                    raise _InvalidModelData("Admin command in public notes")
         return notes
     return _model_json(
         therapist,
@@ -1034,9 +1188,11 @@ class UpdateCache:
                 findings = _model_json(
                     therapist, _ANALYSIS_SYSTEM, fragment["diff"],
                     lambda parsed: _validate_findings(parsed, fragment),
+                    use_analysis_model=True,
                 )
             except Exception as exc:
-                failures.append(f"{fragment['path']}: {type(exc).__name__}")
+                diagnostic = str(exc) if isinstance(exc, _ModelRequestError) else "Analysis failed"
+                failures.append(f"{fragment['path']}: {diagnostic}")
                 continue
             saved[key] = findings
             # Never replace a concurrent manual edit or approval.
@@ -1048,16 +1204,12 @@ class UpdateCache:
                 current["analysis"] = {"version": _UPDATE_ANALYSIS_VERSION, "fragments": saved}
                 self.update(current)
         findings = []
-        seen = set()
         for fragment in fragments:
             key = hashlib.sha256(
                 (str(_UPDATE_ANALYSIS_VERSION) + fragment["path"] + fragment["diff"]).encode("utf-8")
             ).hexdigest()
-            for item in saved.get(key, []):
-                identity = (item["category"], item["component"].casefold(), item["description"].casefold())
-                if identity not in seen:
-                    findings.append(item)
-                    seen.add(identity)
+            findings.extend(saved.get(key, []))
+        findings = _group_findings(findings)
         notes = {"ru": "", "en": ""}
         reason = ""
         if change_set["missing"] or failures:
@@ -1073,8 +1225,9 @@ class UpdateCache:
                 if not any(notes.values()):
                     reason = "Модель не нашла пользовательских изменений. Можно пропустить или править."
             except Exception as exc:
-                reason = f"Не удалось создать changelog ({type(exc).__name__}); повторите /updates или правьте вручную."
-                print(f"[UPDATE CHECK] Generation failed: {type(exc).__name__}")
+                diagnostic = str(exc) if isinstance(exc, _ModelRequestError) else "Generation failed"
+                reason = f"Не удалось создать changelog ({diagnostic}); повторите /updates или правьте вручную."
+                print(f"[UPDATE CHECK] Generation failed: {diagnostic}")
         # A retry runs in a worker thread. Do not overwrite an edit, approval,
         # or skip that happened while the model request was in flight.
         with self._lock:

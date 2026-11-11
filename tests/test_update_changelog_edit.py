@@ -5,6 +5,8 @@ Run: py -m pytest tests/test_update_changelog_edit.py -v
 
 import sys
 import asyncio
+import html
+from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -59,27 +61,27 @@ async def test_preview_contains_edit_option():
 
 
 @pytest.mark.asyncio
-async def test_preview_shows_technical_summary_not_source(tmp_path):
+async def test_preview_is_compact_and_hides_technical_details(tmp_path):
     bot = _durable_bot(tmp_path)
     pending = bot.update_cache.pending()
-    pending["analysis"] = {
-        "added": 4, "removed": 2, "missing": ["src/unknown.py"], "failures": [],
-        "findings": [
+    pending["analysis"]["findings"] = [
             {"category": "fix", "component": "Ответы", "description": "Исправлен ответ",
              "path": "src/telegram_bot.py", "evidence": "secret source code"},
             {"category": "internal", "component": "Кэш", "description": "Упрощён кэш",
              "path": "src/cache.py", "evidence": "private code"},
             {"category": "uncertain", "component": "Диалог", "description": "Эффект неизвестен",
              "path": "prompts/a.md", "evidence": "private prompt"},
-        ],
-    }
+            {"category": "change", "component": "Кэш", "description": "Изменено условие оператора if",
+             "path": "src/cache.py", "evidence": "if condition"},
+    ]
     bot.update_cache.update(pending)
     preview = bot._format_update_preview(pending["notes"])
-    for text in ("+4", "−2", "Ответы", "Исправлен ответ", "Упрощён кэш",
-                 "Эффект неизвестен", "src/unknown.py", "Готовые пользовательские тексты"):
+    for text in ("Изменено файлов", "Краткая сводка", "Исправлен ответ",
+                 "Готовый текст RU", "Готовый текст EN", "Отправить?"):
         assert text in preview
-    assert "secret source code" not in preview
-    assert "private prompt" not in preview
+    for text in ("secret source code", "private prompt", "src/", "Упрощён кэш",
+                 "Эффект неизвестен", "условие оператора", "Компоненты:"):
+        assert text not in preview
 
 
 @pytest.mark.asyncio
@@ -152,6 +154,8 @@ def _durable_bot(tmp_path):
     pending = bot.update_cache.prepare()
     pending["status"] = "review"
     pending["notes"] = {"ru": "Первое", "en": "First"}
+    pending["analysis"] = {"fragment_count": 1, "fragments": {"test": []},
+                           "findings": [], "missing": [], "failures": []}
     bot.update_cache.update(pending)
     bot.pending_update_changelogs = dict(pending["notes"])
     bot.update_broadcast_lock = asyncio.Lock()
@@ -162,6 +166,169 @@ def _durable_bot(tmp_path):
     bot._resume_update_broadcast = cls._resume_update_broadcast.__get__(bot, cls)
     bot._check_and_notify_updates = cls._check_and_notify_updates.__get__(bot, cls)
     return bot
+
+
+@pytest.mark.asyncio
+async def test_incomplete_analysis_blocks_preview_and_preserves_baseline(tmp_path):
+    bot = _durable_bot(tmp_path)
+    pending = bot.update_cache.pending()
+    pending["reason"] = "Не удалось завершить анализ. secret failure details"
+    pending["analysis"]["failures"] = ["src/telegram_bot.py: ValueError"] * 12
+    bot.update_cache.update(pending)
+    before = bot.update_cache._read()
+
+    assert await bot._check_and_notify_updates(delay=False) == "incomplete"
+    notice = bot.send_long_message.await_args.args[1]
+    assert "не завершён" in notice and "/updates" in notice
+    assert "Отправить?" not in notice and "ValueError" not in notice and "src/" not in notice
+    assert bot.user_states.get(42, "chat") == "chat"
+    assert bot.update_cache._read() == before
+    await bot._process_update_broadcast()
+    assert bot.update_cache._read() == before
+
+    # A stale confirmation or skip must not bypass the durable state.
+    bot.pending_update_changelogs = dict(pending["notes"])
+    for choice in ("да", "нет", "править"):
+        bot.user_states[42] = "update_confirm"
+        await bot._handle_update_confirm_input(_msg(), choice)
+        bot.pending_update_changelogs = dict(pending["notes"])
+    assert bot.update_cache._read() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("damage", ["missing_analysis", "missing_fragments", "missing_snapshot"])
+async def test_unproven_analysis_is_incomplete(tmp_path, damage):
+    bot = _durable_bot(tmp_path)
+    pending = bot.update_cache.pending()
+    if damage == "missing_analysis":
+        pending.pop("analysis")
+    elif damage == "missing_fragments":
+        pending["analysis"]["fragments"] = {}
+    else:
+        pending["analysis"]["missing"] = ["src/telegram_bot.py"]
+    bot.update_cache.update(pending)
+    before = bot.update_cache._read()
+    assert await bot._check_and_notify_updates(delay=False) == "incomplete"
+    assert "не завершён" in bot.send_long_message.await_args.args[1]
+    await bot._process_update_broadcast()
+    assert bot.update_cache._read() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("notes", [
+    {"ru": "", "en": ""},
+    {"ru": "   ", "en": "Valid English"},
+    {"ru": "Хороший текст", "en": "• NONE"},
+    {"ru": "• Нет пользовательских изменений.", "en": "Valid English"},
+    {"ru": "Хороший текст", "en": "---"},
+    {"ru": "Хороший текст", "en": "A" * 3501},
+])
+async def test_invalid_bilingual_notes_cannot_be_confirmed_or_sent(tmp_path, notes):
+    bot = _durable_bot(tmp_path)
+    pending = bot.update_cache.pending()
+    pending["notes"] = notes
+    bot.update_cache.update(pending)
+    before = bot.update_cache._read()
+    assert await bot._check_and_notify_updates(delay=False) == "invalid"
+    notice = bot.send_long_message.await_args.args[1]
+    assert "RU и EN" in notice and "Отправить?" not in notice
+    await bot._process_update_broadcast()
+    assert bot.update_cache._read() == before
+
+    bot.pending_update_changelogs = dict(notes)
+    bot.user_states[42] = "update_confirm"
+    await bot._handle_update_confirm_input(_msg(), "да")
+    assert bot.update_cache._read() == before
+
+
+@pytest.mark.asyncio
+async def test_stale_preview_cannot_confirm_changed_draft(tmp_path):
+    bot = _durable_bot(tmp_path)
+    pending = bot.update_cache.pending()
+    pending["notes"]["ru"] = "Другой текст"
+    bot.update_cache.update(pending)
+    before = bot.update_cache._read()
+    bot.user_states[42] = "update_confirm"
+    await bot._handle_update_confirm_input(_msg(), "да")
+    assert bot.update_cache._read() == before
+    assert bot.user_states[42] == "chat"
+
+
+@pytest.mark.asyncio
+async def test_no_user_changes_are_not_an_analysis_failure_or_a_broadcast(tmp_path):
+    bot = _durable_bot(tmp_path)
+    pending = bot.update_cache.pending()
+    pending["notes"] = {"ru": "", "en": ""}
+    pending["reason"] = "Модель не нашла пользовательских изменений. Можно пропустить или править."
+    pending["analysis"]["findings"] = [{"category": "internal", "description": "Внутренняя правка"}]
+    bot.update_cache.update(pending)
+    before = bot.update_cache._read()
+    assert await bot._check_and_notify_updates(delay=False) == "no_changes"
+    notice = bot.send_long_message.await_args.args[1]
+    assert "изменений не найдено" in notice and "не завершён" not in notice
+    assert "Отправить?" not in notice
+    await bot._process_update_broadcast()
+    assert bot.update_cache._read() == before
+
+
+@pytest.mark.asyncio
+async def test_retry_incomplete_analysis_uses_existing_generation(tmp_path):
+    bot = _durable_bot(tmp_path)
+    pending = bot.update_cache.pending()
+    pending["notes"] = {"ru": "", "en": ""}
+    pending["reason"] = "Не удалось завершить анализ."
+    pending["analysis"] = {"fragments": {}, "fragment_count": 1, "failures": ["ошибка"], "missing": []}
+    bot.update_cache.update(pending)
+    client = MagicMock()
+    def completion(content):
+        return SimpleNamespace(choices=[SimpleNamespace(
+            finish_reason="stop", message=SimpleNamespace(content=content))])
+    client.chat.completions.create.side_effect = [
+        completion('{"findings":[{"category":"fix","component":"Bot",'
+                   '"description":"Исправлен ответ","evidence":"new"}]}'),
+        completion('{"ru":"• Ответ исправлен","en":"• Response fixed"}'),
+    ]
+    bot._get_therapist.return_value = SimpleNamespace(client=client, model="mock")
+    assert await bot._check_and_notify_updates(delay=False, retry_generation=True) == "review"
+    assert bot.update_cache.pending()["notes"]["en"] == "• Response fixed"
+    assert client.chat.completions.create.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_long_preview_is_bounded_escaped_and_contains_full_notes(tmp_path):
+    bot = _durable_bot(tmp_path)
+    pending = bot.update_cache.pending()
+    ru = "RU " + "&<😀" * 1000
+    en = "EN " + ">&😀" * 1000
+    pending["notes"] = {"ru": ru, "en": en}
+    pending["analysis"]["findings"] = [
+        {"category": "fix", "description": f"Исправлено отображение сообщения {i} " + "'&<>" * 130}
+        for i in range(12)
+    ]
+    bot.update_cache.update(pending)
+    assert await bot._check_and_notify_updates(delay=False) == "review"
+    calls = bot.send_long_message.await_args_list
+    assert len(calls) > 1
+    messages = [call.args[1] for call in calls]
+    assert all(len(message) <= 4000 and len(message.encode("utf-16-le")) // 2 <= 4000
+               for message in messages)
+    assert messages[0].count("• ") == 5 and "…" in messages[0]
+
+    class StrictHTML(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            assert tag == "b" and not attrs
+        def handle_endtag(self, tag):
+            assert tag == "b"
+        def handle_entityref(self, name):
+            assert name in {"amp", "lt", "gt", "quot"}
+    for message in messages:
+        StrictHTML(convert_charrefs=False).feed(message)
+    for lang, expected in (("RU", ru), ("EN", en)):
+        chunks = [message.split("\n", 1)[1] for message in messages
+                  if message.startswith(f"<b>Готовый текст {lang}")]
+        assert html.unescape("".join(chunks)) == expected
+    assert calls[-1].kwargs["reply_markup"] is not None
+    assert all(call.kwargs["reply_markup"] is None for call in calls[:-1])
 
 
 @pytest.mark.asyncio

@@ -58,8 +58,16 @@ to exist for the bot to start. Check the catalogue without sending anything:
 ```sh
 cd /opt/roi
 ROI_MUSIC_DIR=/opt/roi-media/music python src/music.py --check
+# Equivalent package entrypoint:
+ROI_MUSIC_DIR=/opt/roi-media/music python -m app.features.music --check
 python -m pytest tests/test_music.py
 ```
+
+The implementation lives in `app/features/music/`: catalogue validation,
+SQLite reservations/history, and Telegram interaction are separate components.
+`src/music.py` remains a compatibility import and catalogue-check entrypoint.
+Default manifest and database paths still resolve from the repository root;
+configured relative paths continue to resolve from the working directory.
 
 Afterwards use `/music` in an already-consenting private Telegram chat and choose
 one of the four category buttons. This sends a real track and permanently consumes
