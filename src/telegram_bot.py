@@ -431,9 +431,9 @@ class TelegramTherapistBot:
         self.use_rag = use_rag
         # probability to ask a clarifying question per-response (defaults to env or 0.37)
         try:
-            self.ask_question_prob = ask_question_prob if ask_question_prob is not None else float(os.getenv("OPENAI_ASK_QUESTION_PROB", 0.37))
+            self.ask_question_prob = ask_question_prob if ask_question_prob is not None else float(os.getenv("OPENAI_ASK_QUESTION_PROB", 0.73))
         except Exception:
-            self.ask_question_prob = 0.37
+            self.ask_question_prob = 0.73
         
         # ID администратора для фидбека (безопасный парсинг без хардкода чужого ID и без падения на строке)
         self.admin_id = _parse_admin_id(os.getenv("ADMIN_ID"))
@@ -1970,7 +1970,7 @@ class TelegramTherapistBot:
             summary_lines.append(t(lang, "assoc_summary_intro"))
             summary_lines.append(f"{('Свобода' if lang=='ru' else 'Freedom')}: {html.escape(', '.join(associations.get('freedom', [])))}")
             summary_lines.append(f"{('Бессмысленность' if lang=='ru' else 'Meaninglessness')}: {html.escape(', '.join(associations.get('nonsense', [])))}")
-            summary_lines.append(f"{('Одиночество' if lang=='ru' else 'Isolation')}: {html.escape(', '.join(associations.get('solitude', [])))}")
+            summary_lines.append(f"{('Одиночество' if lang=='ru' else 'Solitude')}: {html.escape(', '.join(associations.get('solitude', [])))}")
             summary_lines.append(f"{('Смерть' if lang=='ru' else 'Death')}: {html.escape(', '.join(associations.get('death', [])))}")
             summary_lines.append("")
             summary_lines.append(t(lang, "analyzing"))
@@ -1984,17 +1984,19 @@ class TelegramTherapistBot:
             
             sent = await self._new_delivery_placeholder(message)
             try:
-                # Avoid flooding Telegram with edits while a long analysis runs.
-                async with self._animate_loading_dots(sent, interval=4.0):
+                async with self._animate_loading_dots(sent) as loading:
                     source = self._stream_generic(therapist.analyze_associations_stream, associations)
-                    analysis, _ = await self._smooth_stream_generic(source)
+                    analysis, shown = await self._smooth_stream_generic(source, words_per_tick=7)
                 if not analysis.strip():
                     raise ValueError("Empty analysis")
                 title = 'Интерпретация' if lang == 'ru' else 'Interpretation'
                 prefix = f"{title}:\n\n"
                 # Deliver the model's text verbatim, with parsing disabled. Formatting
                 # each incomplete prefix separately corrupts Markdown and identifiers.
-                await self._deliver_response(message, sent, prefix + analysis)
+                await self._deliver_response(
+                    message, sent, prefix + analysis,
+                    None if loading.rate_limited else shown, words_per_tick=7,
+                )
                 self.user_states[user_id] = "chat"
                 del self.temp_associations[user_id]
             except DeliveryError as exc:
@@ -2032,18 +2034,16 @@ class TelegramTherapistBot:
         
         sent = await self._new_delivery_placeholder(message)
         try:
-            async with self._animate_loading_dots(
-                sent, stop_on_rate_limit=True,
-            ) as loading:
+            async with self._animate_loading_dots(sent) as loading:
                 source = self._stream_generic(therapist.analyze_story_stream, text)
-                analysis, _ = await self._smooth_stream_generic(source)
+                analysis, shown = await self._smooth_stream_generic(source, words_per_tick=7)
             if not analysis.strip():
                 raise ValueError("Empty analysis")
             title = 'Экзистенциальный отклик' if lang == 'ru' else 'Existential response'
             prefix = f"{title}:\n\n"
             await self._deliver_response(
                 message, sent, prefix + analysis,
-                animation_max_edits=0 if loading.rate_limited else 6,
+                None if loading.rate_limited else shown, words_per_tick=7,
             )
             self.user_states[user_id] = "chat"
         except DeliveryError as exc:
@@ -2606,7 +2606,7 @@ class TelegramTherapistBot:
         return None
 
     async def _deliver_response(
-        self, message, sent, text, shown=None, *, animation_max_edits: int = 0,
+        self, message, sent, text, shown=None, *, words_per_tick: int = 3,
     ):
         """Deliver only confirmed text; raise with the confirmed prefix on failure."""
         lang = self.user_langs.get(message.from_user.id, DEFAULT_LANG)
@@ -2629,29 +2629,7 @@ class TelegramTherapistBot:
             last = ""
             try:
                 if target is not None:
-                    animation_failed = False
-                    if index == 0 and animation_max_edits > 1:
-                        # Animate only the first part. Reserve one edit for its
-                        # complete text and bound the total regardless of length.
-                        candidates = self._typing_prefixes(part)[:-1]
-                        count = min(len(candidates), animation_max_edits - 1)
-                        previews = [
-                            candidates[(i * len(candidates)) // count]
-                            for i in range(count)
-                        ]
-                        for preview in previews:
-                            try:
-                                await self._telegram_request(
-                                    "edit_text", target.edit_text, preview,
-                                    part_index=index, parse_mode=None, max_attempts=1,
-                                )
-                                last = preview
-                            except Exception:
-                                # Stop animating this part and try its full text.
-                                animation_failed = True
-                                break
-                            await asyncio.sleep(0.5)
-                    previews = self._typing_prefixes(part) if shown and not animation_failed else [part]
+                    previews = self._typing_prefixes(part, words_per_tick) if shown else [part]
                     for preview in previews:
                         try:
                             await self._telegram_request(

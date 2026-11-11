@@ -784,7 +784,39 @@ async def test_analysis_failure_notice_and_state(owner, monkeypatch, kind, failu
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["assoc", "story"])
-async def test_analysis_does_not_replay_long_answer_as_rapid_edits(owner, monkeypatch, kind):
+async def test_analysis_preview_advances_seven_words(owner, monkeypatch, kind):
+    sleep = AsyncMock()
+    monkeypatch.setattr(tb.asyncio, "sleep", sleep)
+    therapist = Therapist([])
+    response = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen"
+    therapist.analyze_associations_stream = lambda associations: iter([response])
+    therapist.analyze_story_stream = lambda story: iter([response])
+    owner.sessions[7] = therapist
+    owner.temp_associations = {7: {"freedom": ["free"], "nonsense": ["void"], "solitude": ["alone"]}}
+    telegram = FakeTelegram()
+    if kind == "assoc":
+        owner.user_states[7] = "assoc_death"
+        await owner._handle_assoc_input(telegram, "assoc_death", "death")
+        expected = [
+            "Interpretation:\n\none two three four five six",
+            "Interpretation:\n\none two three four five six seven eight nine ten eleven twelve thirteen",
+            "Interpretation:\n\n" + response,
+        ]
+    else:
+        owner.user_states[7] = "analyze_story"
+        await owner._handle_story_input(telegram, "A sufficiently long story for analysis.")
+        expected = [
+            "Existential response:\n\none two three four five",
+            "Existential response:\n\none two three four five six seven eight nine ten eleven twelve",
+            "Existential response:\n\n" + response,
+        ]
+    assert [call.args[0] for call in telegram.visible[-1].edit_text.await_args_list] == expected
+    assert [call.args[0] for call in sleep.await_args_list] == [0.12] * len(expected)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["assoc", "story"])
+async def test_analysis_types_seven_words_per_tick_across_long_answer(owner, monkeypatch, kind):
     sleep = AsyncMock()
     monkeypatch.setattr(tb.asyncio, "sleep", sleep)
     therapist = Therapist([])
@@ -805,13 +837,13 @@ async def test_analysis_does_not_replay_long_answer_as_rapid_edits(owner, monkey
         title = "Interpretation:\n\n"
         parts = telegram.visible[1:]
     assert "".join(part.text for part in parts) == title + response
-    edits = sum(part.edit_text.await_count for part in parts)
-    if kind == "assoc":
-        assert edits == 1
-    else:
-        assert 1 < edits <= 6
-    if kind == "story":
-        assert [call.args[0] for call in sleep.await_args_list] == [0.5] * (edits - 1)
+    edits = 0
+    for part in parts:
+        previews = [call.args[0] for call in part.edit_text.await_args_list]
+        assert previews == owner._typing_prefixes(part.text, 7)
+        edits += len(previews)
+    assert edits > 6
+    assert [call.args[0] for call in sleep.await_args_list] == [0.12] * edits
     assert owner.user_states[7] == "chat"
 
 
@@ -852,20 +884,22 @@ async def test_story_animation_failure_delivers_complete_text(owner, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_story_dots_use_default_speed_and_rate_limit_skips_text_animation(owner, monkeypatch):
+@pytest.mark.parametrize("kind", ["assoc", "story"])
+async def test_analysis_dots_use_default_speed_and_rate_limit_skips_text_animation(owner, monkeypatch, kind):
     from contextlib import asynccontextmanager
 
     therapist = Therapist([])
     response = "one two three four five six seven eight nine ten"
     therapist.analyze_story_stream = lambda story: iter([response])
+    therapist.analyze_associations_stream = lambda associations: iter([response])
     owner.sessions[7] = therapist
-    owner.user_states[7] = "analyze_story"
+    owner.temp_associations = {7: {"freedom": ["free"], "nonsense": ["void"], "solitude": ["alone"]}}
     sleep = AsyncMock()
     monkeypatch.setattr(tb.asyncio, "sleep", sleep)
     @asynccontextmanager
     async def dots(sent, interval=0.37, *, stop_on_rate_limit=False):
         assert interval == 0.37
-        assert stop_on_rate_limit
+        assert not stop_on_rate_limit
         state = tb._LoadingAnimationState(
             rate_limited=True, retry_deadline=tb.time.monotonic() + 3.0,
         )
@@ -874,16 +908,26 @@ async def test_story_dots_use_default_speed_and_rate_limit_skips_text_animation(
 
     owner._animate_loading_dots = dots
     telegram = FakeTelegram()
-    await owner._handle_story_input(telegram, "A sufficiently long story for analysis.")
+    if kind == "story":
+        owner.user_states[7] = "analyze_story"
+        await owner._handle_story_input(telegram, "A sufficiently long story for analysis.")
+        part = telegram.visible[0]
+        title = "Existential response:\n\n"
+    else:
+        owner.user_states[7] = "assoc_death"
+        await owner._handle_assoc_input(telegram, "assoc_death", "death")
+        part = telegram.visible[-1]
+        title = "Interpretation:\n\n"
 
     assert sleep.await_count == 1
     assert 2.9 <= sleep.await_args.args[0] <= 3.0
-    assert telegram.contents() == "Existential response:\n\n" + response
-    assert telegram.visible[0].edit_text.await_count == 1
+    assert part.text == title + response
+    assert part.edit_text.await_count == 1
 
 
 @pytest.mark.asyncio
-async def test_story_runs_real_fast_dots_then_delivers_answer(owner):
+@pytest.mark.parametrize("kind", ["assoc", "story"])
+async def test_analysis_runs_real_fast_dots_then_delivers_answer(owner, kind):
     therapist = Therapist([])
 
     def analyze(story):
@@ -891,15 +935,23 @@ async def test_story_runs_real_fast_dots_then_delivers_answer(owner):
         yield "Reflection."
 
     therapist.analyze_story_stream = analyze
+    therapist.analyze_associations_stream = analyze
     owner.sessions[7] = therapist
-    owner.user_states[7] = "analyze_story"
+    owner.temp_associations = {7: {"freedom": ["free"], "nonsense": ["void"], "solitude": ["alone"]}}
     telegram = FakeTelegram()
 
-    await owner._handle_story_input(telegram, "A sufficiently long story for analysis.")
+    if kind == "story":
+        owner.user_states[7] = "analyze_story"
+        await owner._handle_story_input(telegram, "A sufficiently long story for analysis.")
+        title = "Existential response:\n\n"
+    else:
+        owner.user_states[7] = "assoc_death"
+        await owner._handle_assoc_input(telegram, "assoc_death", "death")
+        title = "Interpretation:\n\n"
 
-    edits = [call.args[0] for call in telegram.visible[0].edit_text.await_args_list]
+    edits = [call.args[0] for call in telegram.visible[-1].edit_text.await_args_list]
     assert edits[:2] == ["..", "."]
-    assert edits[-1] == "Existential response:\n\nReflection."
+    assert edits[-1] == title + "Reflection."
     assert owner.user_states[7] == "chat"
 
 
@@ -907,7 +959,7 @@ async def test_story_runs_real_fast_dots_then_delivers_answer(owner):
 async def test_story_failed_later_preview_jumps_to_full_text(owner, monkeypatch):
     monkeypatch.setattr(tb.asyncio, "sleep", AsyncMock())
     therapist = Therapist([])
-    response = "one two three four five six seven eight nine ten eleven twelve"
+    response = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen"
     therapist.analyze_story_stream = lambda story: iter([response])
     owner.sessions[7] = therapist
     owner.user_states[7] = "analyze_story"

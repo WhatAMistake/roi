@@ -740,7 +740,7 @@ class ExistentialTherapistBot:
                 "result_status": analysis.get("result_status"),
                 "retrieval_hypothesis": hypothesis}
         if self.language == "en":
-            instruction = ("As Roy, offer a humane, natural existential reflection in English on these associations, "
+            instruction = ("As Roi, offer a humane, natural existential reflection in English on these associations, "
                 "in the spirit of Yalom and Frankl without forcing theory. Aim for 1,600–2,500 "
                 "characters including spaces, usually in 2–4 short paragraphs; keep the whole "
                 "answer including any heading under about 3,500 characters. Do not pad a thin "
