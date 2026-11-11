@@ -236,4 +236,4 @@ python -m pytest tests/
 
 ## Лицензия
 
-MIT(без душнилова). Если хочется душнилова, см. [LICENSE](LICENSE).
+MIT (без душнилова). Если хочется душнилова, см. [LICENSE](LICENSE).
