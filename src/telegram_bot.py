@@ -1311,12 +1311,31 @@ class TelegramTherapistBot:
         details = []
         if pending:
             paths = pending.get("paths", [])
+            analysis = pending.get("analysis", {})
             details = [
-                f"Изменено файлов: <b>{len(paths)}</b>",
-                html.escape(", ".join(paths[:12])) + (" …" if len(paths) > 12 else ""),
+                "<b>Технический обзор</b>",
+                f"Изменено файлов: <b>{len(paths)}</b>; строк: "
+                f"+{analysis.get('added', 0)} / −{analysis.get('removed', 0)}"
+                + (" (только проверенные файлы)" if analysis.get("missing") else ""),
+                "Компоненты: " + html.escape(", ".join(dict.fromkeys(
+                    item.get("component", "") for item in analysis.get("findings", [])
+                    if item.get("component")
+                )) or "—"),
                 html.escape(pending.get("reason", "")),
-                "",
             ]
+            labels = {
+                "feature": "Добавлено", "fix": "Исправлено", "change": "Изменено",
+                "internal": "Внутреннее", "uncertain": "Неоднозначное",
+            }
+            for category, label in labels.items():
+                items = [f"{item['description']} ({item['path']})"
+                         for item in analysis.get("findings", []) if item.get("category") == category]
+                details.append(f"{label}: " + html.escape("; ".join(items) if items else "—"))
+            if analysis.get("missing"):
+                details.append("Не проверены: " + html.escape(", ".join(analysis["missing"])))
+            if analysis.get("failures"):
+                details.append("Ошибки анализа: " + html.escape("; ".join(analysis["failures"])))
+            details.append("")
         eligible = sum(1 for user_id in self.user_langs if self._has_consent(user_id))
         return "\n".join([
             "📋 <b>Предпросмотр обновления</b>",
@@ -1324,7 +1343,7 @@ class TelegramTherapistBot:
             f"Получателей с согласием: <b>{eligible}</b>",
             *details,
             "",
-            "<b>RU:</b>",
+            "<b>Готовые пользовательские тексты</b>\n<b>RU:</b>",
             _clip(changelog_ru),
             "",
             "<b>EN:</b>",
@@ -1503,6 +1522,13 @@ class TelegramTherapistBot:
         for user_key, recipient in pending["recipients"].items():
             if recipient["status"] in ("sent", "skipped"):
                 continue
+            if recipient["status"] in ("in_flight", "uncertain", "failed"):
+                # Telegram may have accepted a request before a timeout or
+                # process crash. Retrying it could broadcast the same update twice.
+                recipient["status"] = "uncertain"
+                failed_users.append(user_key)
+                cache.update(pending)
+                continue
             user_id = int(user_key)
             if not self._has_consent(user_id):
                 recipient["status"] = "skipped"
@@ -1516,24 +1542,27 @@ class TelegramTherapistBot:
                     + html.escape(str(changelog))
                     + t(user_lang, "update_notification_footer")
                 )
+                recipient["status"] = "in_flight"
+                cache.update(pending)
                 await self.send_long_message(user_id, localized, parse_mode="HTML")
                 recipient["status"] = "sent"
                 cache.update(pending)
                 sent_count += 1
             except Exception as exc:
-                recipient["status"] = "failed"
+                recipient["status"] = "uncertain"
                 cache.update(pending)
                 failed_users.append(user_key)
                 print(f"[UPDATE BROADCAST] Delivery failed: {type(exc).__name__}")
 
-        if not failed_users:
-            cache.resolve(pending)
-            self._clear_pending_update(self.admin_id)
-            # A newer deployment may have arrived while this draft was pending.
-            asyncio.create_task(self._check_and_notify_updates(delay=False))
+        cache.resolve(pending)
+        self._clear_pending_update(self.admin_id)
+        # A newer deployment may have arrived while this draft was pending.
+        asyncio.create_task(self._check_and_notify_updates(delay=False))
         report = (
-            f"Рассылка: отправлено в этой попытке: {sent_count}; ошибок: {len(failed_users)}."
-            + (" Повторите /updates для оставшихся получателей." if failed_users else "")
+            f"Рассылка: отправлено в этой попытке: {sent_count}; "
+            f"неизвестный результат: {len(failed_users)}."
+            + (" Повторная автоматическая отправка отключена во избежание дублей."
+               if failed_users else "")
         )
         await self.send_long_message(self.admin_id, report)
     async def _handle_reset(self, message: types.Message):
@@ -1894,7 +1923,7 @@ class TelegramTherapistBot:
                 del self.temp_associations[user_id]
             except DeliveryError as exc:
                 await self._show_delivery_error(
-                    message, None if exc.delivered else sent,
+                    message, None,
                     t(lang, "error_delivery_partial" if exc.delivered else "error_delivery"),
                 )
             except Exception:
@@ -1936,8 +1965,6 @@ class TelegramTherapistBot:
                 raise ValueError("Empty analysis")
             title = 'Экзистенциальный отклик' if lang == 'ru' else 'Existential response'
             prefix = f"{title}:\n\n"
-            if loading.rate_limited:
-                await asyncio.sleep(max(0.0, loading.retry_deadline - time.monotonic()))
             await self._deliver_response(
                 message, sent, prefix + analysis,
                 animation_max_edits=0 if loading.rate_limited else 6,
@@ -1945,7 +1972,7 @@ class TelegramTherapistBot:
             self.user_states[user_id] = "chat"
         except DeliveryError as exc:
             await self._show_delivery_error(
-                message, None if exc.delivered else sent,
+                message, None,
                 t(lang, "error_delivery_partial" if exc.delivered else "error_delivery"),
             )
         except Exception:
@@ -2142,10 +2169,12 @@ class TelegramTherapistBot:
 
     @asynccontextmanager
     async def _animate_loading_dots(
-        self, message, interval: float = 0.37, *, stop_on_rate_limit: bool = False,
+        self, message, interval: float = 0.52, *, stop_on_rate_limit: bool = False,
     ):
         """Анимирует индикатор ожидания (3 -> 2 -> 1 -> 2 -> 3 точки),
         пока модель генерирует ответ.
+
+        stop_on_rate_limit is retained for callers; 429 always stops the dots.
         """
         state = _LoadingAnimationState()
         if message is None:
@@ -2174,7 +2203,7 @@ class TelegramTherapistBot:
                             "Telegram loading_edit failed: type=%s part=0 chars=%d",
                             type(exc).__name__, len(frame),
                         )
-                        if stop_on_rate_limit and isinstance(exc, TelegramRetryAfter):
+                        if isinstance(exc, TelegramRetryAfter):
                             state.rate_limited = True
                             state.retry_deadline = time.monotonic() + max(
                                 0.0, float(exc.retry_after),
@@ -2194,6 +2223,12 @@ class TelegramTherapistBot:
                     await task
                 except asyncio.CancelledError:
                     pass
+            # A 429 applies to the next request too, including an error notice
+            # if generation failed. Do not continue the dots during this wait.
+            if state.rate_limited:
+                remaining = state.retry_deadline - time.monotonic()
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
 
     async def _smooth_stream(self, therapist, user_input, words_per_tick: int = 3, tick: float = 0.12):
         """Сглаживает стриминг: накапливает чанки от API и отдаёт
@@ -2455,13 +2490,18 @@ class TelegramTherapistBot:
                     "Telegram %s failed: type=%s attempt=%d part=%d chars=%d retry_delay=%s",
                     operation, type(exc).__name__, attempt, part_index,
                     len(args[0]) if args and isinstance(args[0], str) else 0,
-                    delay if transient and attempt < max_attempts and delay <= 30 else None,
+                    delay if isinstance(exc, TelegramRetryAfter) or (
+                        transient and attempt < max_attempts and delay <= 30
+                    ) else None,
                 )
-                # A retry-after longer than the bounded wait is a failure, not
-                # permission to retry before Telegram's deadline.
+                # Even when retries are exhausted, the caller may immediately
+                # use another method (or send a notice). Respect the 429 first.
+                if isinstance(exc, TelegramRetryAfter):
+                    await asyncio.sleep(delay)
                 if not transient or attempt == max_attempts or delay > 30:
                     raise
-                await asyncio.sleep(delay)
+                if not isinstance(exc, TelegramRetryAfter):
+                    await asyncio.sleep(delay)
 
     async def _show_delivery_error(self, message, sent, text):
         if sent is not None:
@@ -2513,6 +2553,7 @@ class TelegramTherapistBot:
             last = ""
             try:
                 if target is not None:
+                    animation_failed = False
                     if index == 0 and animation_max_edits > 1:
                         # Animate only the first part. Reserve one edit for its
                         # complete text and bound the total regardless of length.
@@ -2529,41 +2570,41 @@ class TelegramTherapistBot:
                                     part_index=index, parse_mode=None, max_attempts=1,
                                 )
                                 last = preview
-                            except Exception as exc:
-                                # The animation is optional. Honor Telegram's
-                                # deadline, then try to deliver the full part.
-                                if isinstance(exc, TelegramRetryAfter):
-                                    await asyncio.sleep(max(0.0, float(exc.retry_after)))
+                            except Exception:
+                                # Stop animating this part and try its full text.
+                                animation_failed = True
                                 break
                             await asyncio.sleep(0.5)
-                    previews = self._typing_prefixes(part) if shown else [part]
+                    previews = self._typing_prefixes(part) if shown and not animation_failed else [part]
                     for preview in previews:
                         try:
                             await self._telegram_request(
                                 "edit_text", target.edit_text, preview,
                                 part_index=index, parse_mode=None,
+                                max_attempts=1 if shown and preview != part else 3,
                             )
                             last = preview
                         except Exception:
-                            # If deletion fails, retain any confirmed preview and
-                            # send only its suffix rather than publishing it twice.
-                            removed = False
-                            try:
-                                await self._telegram_request("delete_message", target.delete, part_index=index)
-                                removed = True
-                            except Exception as exc:
-                                logger.warning("Telegram placeholder deletion failed: type=%s part=%d",
-                                               type(exc).__name__, index)
-                            if removed:
-                                last = ""
-                            remaining = part[len(last):] if last else part
-                            if remaining:
-                                kwargs = {"reply_markup": get_main_keyboard(lang)} if index == len(parts) - 1 else {}
-                                await self._telegram_request(
-                                    "send_message", message.answer, remaining,
-                                    part_index=index, parse_mode=None, **kwargs,
-                                )
-                            last = part
+                            # Intermediate failures end animation. First try to
+                            # complete the existing message, without deleting it.
+                            if preview != part:
+                                try:
+                                    await self._telegram_request(
+                                        "edit_text", target.edit_text, part,
+                                        part_index=index, parse_mode=None,
+                                    )
+                                    last = part
+                                except Exception:
+                                    pass  # The failed request was logged.
+                            if last != part:
+                                remaining = part[len(last):]
+                                if remaining:
+                                    kwargs = {"reply_markup": get_main_keyboard(lang)} if index == len(parts) - 1 else {}
+                                    await self._telegram_request(
+                                        "send_message", message.answer, remaining,
+                                        part_index=index, parse_mode=None, **kwargs,
+                                    )
+                                last = part
                             break
                         if shown:
                             await asyncio.sleep(0.12)
@@ -2726,7 +2767,7 @@ class TelegramTherapistBot:
                     self.user_consecutive_messages[user_id] = 0
                     self._save_user_prefs(force=True)
                 await self._show_delivery_error(
-                    message, None if exc.delivered else sent,
+                    message, None,
                     t(lang, "error_delivery_partial" if exc.delivered else "error_delivery"),
                 )
             except Exception:
@@ -2842,7 +2883,7 @@ class TelegramTherapistBot:
                                          [strip_markdown(part) for part in shown])
         except DeliveryError as exc:
             await self._show_delivery_error(
-                message, None if exc.delivered else sent,
+                message, None,
                 t(lang, "error_delivery_partial" if exc.delivered else "error_delivery"),
             )
         except Exception:

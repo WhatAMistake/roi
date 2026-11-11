@@ -376,20 +376,27 @@ async def test_typing_is_three_words_per_tick_after_generation(owner, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_edit_failure_deletes_preview_and_resends(owner, monkeypatch):
+async def test_edit_failure_keeps_preview_and_finishes_in_place(owner, monkeypatch):
     monkeypatch.setattr(tb.asyncio, "sleep", AsyncMock())
     telegram = FakeTelegram()
     first = await telegram.send("...")
-    first.edit_text.side_effect = [first, RuntimeError("secret edit")]
-    first.text = "one two three"
+    async def edit(preview, **kwargs):
+        if first.edit_text.await_count == 2:
+            raise RuntimeError("secret edit")
+        return await first.edit(preview, **kwargs)
+    first.edit_text.side_effect = edit
     text = "one two three four five six seven"
     assert await owner._deliver_response(telegram, first, text, [text]) == text
-    assert first.deleted
+    assert [call.args[0] for call in first.edit_text.await_args_list] == [
+        "one two three", "one two three four five six", text,
+    ]
+    first.delete.assert_not_awaited()
+    telegram.answer.assert_not_awaited()
     assert telegram.contents() == text
 
 
 @pytest.mark.asyncio
-async def test_edit_failure_with_undeletable_preview_sends_only_suffix(owner, monkeypatch):
+async def test_permanent_edit_failure_sends_only_suffix(owner, monkeypatch):
     monkeypatch.setattr(tb.asyncio, "sleep", AsyncMock())
     telegram = FakeTelegram()
     first = await telegram.send("...")
@@ -398,11 +405,11 @@ async def test_edit_failure_with_undeletable_preview_sends_only_suffix(owner, mo
             raise RuntimeError("secret edit")
         return await first.edit(text, **kwargs)
     first.edit_text.side_effect = edit
-    first.delete.side_effect = RuntimeError("secret delete")
     text = "one two three four five six seven"
     assert await owner._deliver_response(telegram, first, text, [text]) == text
     assert telegram.contents() == text
     assert telegram.answer.await_args.args[0] == text[len("one two three"):]
+    first.delete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -415,11 +422,188 @@ async def test_failed_fallback_keeps_confirmed_preview(owner, monkeypatch):
             raise RuntimeError("edit failed")
         return await first.edit(text, **kwargs)
     first.edit_text.side_effect = edit
-    first.delete.side_effect = RuntimeError("delete failed")
     telegram.answer.side_effect = RuntimeError("send failed")
     with pytest.raises(tb.DeliveryError) as error:
         await owner._deliver_response(telegram, first, "one two three four five six", [True])
     assert error.value.delivered == telegram.contents() == "one two three"
+    first.delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["en", "ru"])
+@pytest.mark.parametrize("send_fails", [False, True])
+async def test_chat_fallback_history_and_separate_notice(owner, monkeypatch, language, send_fails):
+    monkeypatch.setattr(tb.asyncio, "sleep", AsyncMock())
+    owner.user_langs[7] = language
+    text = "one two three four five six seven"
+    owner.sessions[7] = Therapist([text])
+    telegram = FakeTelegram()
+
+    async def send(value, **kwargs):
+        if value == "..." and not telegram.visible:
+            item = await telegram.send(value, **kwargs)
+            async def edit(preview, **edit_kwargs):
+                if item.text != "...":
+                    raise tb.TelegramBadRequest(object(), "private")
+                return await item.edit(preview, **edit_kwargs)
+            item.edit_text.side_effect = edit
+            return item
+        if send_fails and value == text[len("one two three"):]:
+            raise RuntimeError("private")
+        return await telegram.send(value, **kwargs)
+
+    telegram.answer.side_effect = send
+    await owner._handle_chat(telegram, "hello")
+
+    expected = "one two three" if send_fails else text
+    assert owner.sessions[7].history[-1].content == expected
+    assert owner.user_recent_messages[7][-1]["content"] == expected
+    owner.user_recent_messages = {}
+    owner._load_user_prefs()
+    assert owner.user_recent_messages[7][-1]["content"] == expected
+    telegram.visible[0].delete.assert_not_awaited()
+    if send_fails:
+        assert telegram.visible[0].text == expected
+        assert telegram.visible[-1].text == tb.t(language, "error_delivery_partial")
+    else:
+        assert telegram.contents() == text
+
+
+@pytest.mark.asyncio
+async def test_long_delivery_recovers_without_repeating_confirmed_parts(owner, monkeypatch):
+    monkeypatch.setattr(tb.asyncio, "sleep", AsyncMock())
+    telegram = FakeTelegram()
+    first = await telegram.send("...")
+    text = "one two three " + "x" * 5000
+    parts = owner._split_text(text)
+    async def edit(preview, **kwargs):
+        if first.text != "...":
+            raise tb.TelegramBadRequest(object(), "private")
+        return await first.edit(preview, **kwargs)
+    first.edit_text.side_effect = edit
+
+    assert await owner._deliver_response(telegram, first, text, [text]) == text
+    assert telegram.contents() == text
+    assert telegram.answer.await_args_list[0].args[0] == parts[0][len("one two three"):]
+    assert all(len(item.text.encode("utf-16-le")) // 2 <= 4096 for item in telegram.visible)
+    first.delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_preview_waits_before_full_edit(owner):
+    telegram = FakeTelegram()
+    first = await telegram.send("...")
+    times = []
+    async def edit(preview, **kwargs):
+        times.append(tb.time.monotonic())
+        if len(times) == 1:
+            raise tb.TelegramRetryAfter(object(), "private", retry_after=0.05)
+        return await first.edit(preview, **kwargs)
+    first.edit_text.side_effect = edit
+    text = "one two three four five six seven"
+    assert await owner._deliver_response(telegram, first, text, [text]) == text
+    assert times[1] - times[0] >= 0.045
+    assert [c.args[0] for c in first.edit_text.await_args_list] == ["one two three", text]
+    telegram.answer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [
+    tb.TelegramNetworkError(object(), "private"),
+    tb.TelegramServerError(object(), "private"),
+    asyncio.TimeoutError("private"),
+])
+async def test_transient_preview_failure_jumps_to_full_edit(owner, monkeypatch, failure):
+    monkeypatch.setattr(tb.asyncio, "sleep", AsyncMock())
+    telegram = FakeTelegram()
+    first = await telegram.send("...")
+    async def edit(preview, **kwargs):
+        if first.edit_text.await_count == 2:
+            raise failure
+        return await first.edit(preview, **kwargs)
+    first.edit_text.side_effect = edit
+    text = "one two three four five six seven eight nine ten"
+    assert await owner._deliver_response(telegram, first, text, [text]) == text
+    assert [c.args[0] for c in first.edit_text.await_args_list] == [
+        "one two three", "one two three four five six", text,
+    ]
+    assert telegram.contents() == text
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_edit_and_failed_send_never_replace_visible_text(owner, monkeypatch):
+    monkeypatch.setattr(tb.asyncio, "sleep", AsyncMock())
+    text = "answer without confirmation"
+    owner.sessions[7] = Therapist([text])
+    telegram = FakeTelegram()
+    async def send(value, **kwargs):
+        if value == "...":
+            item = await telegram.send(value, **kwargs)
+            async def edit(preview, **edit_kwargs):
+                item.text = preview  # Telegram may have applied an unconfirmed edit.
+                return None
+            item.edit_text.side_effect = edit
+            return item
+        if value == text:
+            return None
+        return await telegram.send(value, **kwargs)
+    telegram.answer.side_effect = send
+
+    await owner._handle_chat(telegram, "hello")
+
+    assert telegram.visible[0].text == text
+    telegram.visible[0].delete.assert_not_awaited()
+    assert telegram.visible[-1].text == tb.t(tb.DEFAULT_LANG, "error_delivery")
+    assert owner.sessions[7].history == []
+    assert 7 not in owner.user_recent_messages
+
+
+@pytest.mark.asyncio
+async def test_exhausted_rate_limit_waits_before_suffix_send(owner):
+    telegram = FakeTelegram()
+    first = await telegram.send("...")
+    last_failure = []
+    async def edit(preview, **kwargs):
+        if preview == "one two three":
+            return await first.edit(preview, **kwargs)
+        last_failure.append(tb.time.monotonic())
+        raise tb.TelegramRetryAfter(object(), "private", retry_after=0.02)
+    first.edit_text.side_effect = edit
+    sent_at = []
+    async def send(value, **kwargs):
+        sent_at.append(tb.time.monotonic())
+        return await telegram.send(value, **kwargs)
+    telegram.answer.side_effect = send
+    text = "one two three four five six seven"
+    assert await owner._deliver_response(telegram, first, text, [text]) == text
+    assert sent_at[0] - last_failure[-1] >= 0.018
+    assert telegram.contents() == text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("generation_fails", [False, True])
+async def test_loading_rate_limit_stops_dots_and_delays_next_request(owner, generation_fails):
+    telegram = FakeTelegram()
+    first = await telegram.send("...")
+    hit = asyncio.Event()
+    times = []
+    async def edit(value, **kwargs):
+        times.append(tb.time.monotonic())
+        hit.set()
+        raise tb.TelegramRetryAfter(object(), "private", retry_after=0.08)
+    first.edit_text.side_effect = edit
+    try:
+        async with owner._animate_loading_dots(first, interval=0.01) as loading:
+            await asyncio.wait_for(hit.wait(), 1)
+            await asyncio.sleep(0.03)
+            assert first.edit_text.await_count == 1
+            if generation_fails:
+                raise ValueError("generation failed")
+    except ValueError:
+        assert generation_fails
+    assert loading.rate_limited
+    assert tb.time.monotonic() - times[0] >= 0.075
+    assert first.edit_text.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -468,6 +652,7 @@ async def test_retries_and_logs_are_bounded_and_private(owner, monkeypatch, capl
     with pytest.raises(tb.TelegramRetryAfter):
         await owner._telegram_request("send_message", call, "private")
     assert call.await_count == 1
+    assert sleep.await_args.args == (31.0,)
 
 
 @pytest.mark.asyncio
@@ -681,9 +866,11 @@ async def test_story_dots_use_default_speed_and_rate_limit_skips_text_animation(
     async def dots(sent, interval=0.37, *, stop_on_rate_limit=False):
         assert interval == 0.37
         assert stop_on_rate_limit
-        yield tb._LoadingAnimationState(
+        state = tb._LoadingAnimationState(
             rate_limited=True, retry_deadline=tb.time.monotonic() + 3.0,
         )
+        yield state
+        await tb.asyncio.sleep(max(0.0, state.retry_deadline - tb.time.monotonic()))
 
     owner._animate_loading_dots = dots
     telegram = FakeTelegram()

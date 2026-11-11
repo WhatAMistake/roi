@@ -20,6 +20,14 @@ from code_reviewer import (  # noqa: E402
 )
 
 
+def test_legacy_changelog_loader_preserves_therapist_module():
+    import therapist_bot
+    from scripts.test_changelog import load_therapist_bot
+
+    assert load_therapist_bot() is therapist_bot.ExistentialTherapistBot
+    assert sys.modules["therapist_bot"] is therapist_bot
+
+
 def test_strips_think_tags_and_keeps_short_bullets():
     raw = (
         "<think>\n"
@@ -56,6 +64,8 @@ def test_drops_technical_or_empty_output():
     assert _sanitize_changelog("НЕТ") == ""
     assert _sanitize_changelog("Internal improvements to hashing") == ""
     assert _sanitize_changelog("Updated src/telegram_bot.py helper `_clip()`") == ""
+    assert _sanitize_changelog("• Key: sk-1234567890abcdefghijklmnop") == ""
+    assert _sanitize_changelog("• password=topsecret") == ""
 
 
 def test_drops_unmarked_reasoning_dump():
@@ -86,44 +96,36 @@ def test_extract_completion_ignores_reasoning_fields():
     assert _extract_completion_text(response) == "- Snapshot button is easier to find"
 
 
-def test_generate_changelog_sanitizes_model_output():
+def test_generate_changelog_sanitizes_model_output(tmp_path):
+    source = tmp_path / "src" / "i18n.py"
+    source.parent.mkdir()
+    source.write_text("old help text\n", encoding="utf-8")
+    cache = UpdateCache(tmp_path)
+    cache.prepare()
+    old = cache._read()["src/i18n.py"]
+    source.write_text("new help text\n", encoding="utf-8")
+    from code_reviewer import calculate_file_hash
     client = MagicMock()
-    client.chat.completions.create.return_value = SimpleNamespace(
-        choices=[
-            SimpleNamespace(
-                message=SimpleNamespace(
-                    content=(
-                        "<think>Inspect src/i18n.py and the hash snapshot.</think>\n"
-                        "Answer:\n"
-                        "- Help text is clearer\n"
-                        "- Film snapshot is easier to start\n"
-                    )
-                )
-            )
-        ]
-    )
+    def response(content):
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+    client.chat.completions.create.side_effect = [
+        response('{"findings":[{"category":"change","component":"Help",'
+                 '"description":"Help text changed","evidence":"new help text"}]}'),
+        response('{"ru":"• Текст помощи изменён","en":"• Help text is clearer"}'),
+    ]
     therapist = SimpleNamespace(client=client, model="test-model")
-    change_set = {
-        "file_diffs": [{"path": "src/i18n.py", "old_hash": "a", "new_hash": "b", "diff": "+ help"}],
-        "new_commands": [],
-        "has_user_signal": True,
-        "changed_files_count": 1,
-    }
-
     result = generate_changelog_with_llm(
         therapist,
-        [("src/i18n.py", "a", "b")],
-        project_root,
+        [("src/i18n.py", old, calculate_file_hash(source))],
+        tmp_path,
         lang="en",
-        change_set=change_set,
     )
 
     assert result
     assert "i18n.py" not in result
     assert "<think>" not in result
     assert "Help text is clearer" in result
-    assert "Film snapshot is easier to start" in result
-    assert result.count("•") == 2
+    assert result.count("•") == 1
 
 
 def test_durable_hash_draft_survives_restart_and_preserves_later_changes(tmp_path):
@@ -176,7 +178,7 @@ def test_generation_failure_is_not_a_completed_update(tmp_path):
     assert cache.prepare()["id"] == draft["id"]
 
 
-def test_generation_uses_only_changed_diff_once_for_both_languages(tmp_path):
+def test_generation_uses_structured_diff_before_both_languages(tmp_path):
     source = tmp_path / "src" / "telegram_bot.py"
     source.parent.mkdir()
     source.write_text("old\n", encoding="utf-8")
@@ -185,15 +187,17 @@ def test_generation_uses_only_changed_diff_once_for_both_languages(tmp_path):
     source.write_text("new\n", encoding="utf-8")
     draft = cache.prepare()
     client = MagicMock()
-    client.chat.completions.create.return_value = SimpleNamespace(
-        choices=[SimpleNamespace(finish_reason="stop", message=SimpleNamespace(
-            content='{"ru":"• Новый текст","en":"• New text"}'
-        ))]
-    )
+    def response(content):
+        return SimpleNamespace(choices=[SimpleNamespace(finish_reason="stop", message=SimpleNamespace(content=content))])
+    client.chat.completions.create.side_effect = [
+        response('{"findings":[{"category":"change","component":"Text",'
+                 '"description":"Text changed","evidence":"new"}]}'),
+        response('{"ru":"• Новый текст","en":"• New text"}'),
+    ]
     result = cache.generate(SimpleNamespace(client=client, model="test"), draft)
     assert result["notes"] == {"ru": "• Новый текст", "en": "• New text"}
-    client.chat.completions.create.assert_called_once()
-    prompt = client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+    assert client.chat.completions.create.call_count == 2
+    prompt = client.chat.completions.create.call_args_list[0].kwargs["messages"][1]["content"]
     assert "-old" in prompt and "+new" in prompt
 
 
@@ -214,7 +218,7 @@ def test_missing_old_snapshot_requires_manual_review(tmp_path):
     client.chat.completions.create.assert_not_called()
 
 
-def test_oversized_diff_is_not_sent_or_silently_truncated(tmp_path):
+def test_oversized_diff_is_split_not_rejected(tmp_path):
     source = tmp_path / "src" / "telegram_bot.py"
     source.parent.mkdir()
     source.write_text("old\n", encoding="utf-8")
@@ -223,9 +227,20 @@ def test_oversized_diff_is_not_sent_or_silently_truncated(tmp_path):
     source.write_text("new " * 4000, encoding="utf-8")
     draft = cache.prepare()
     client = MagicMock()
+    def response(**kwargs):
+        prompt = kwargs["messages"][1]["content"]
+        line = next(line[1:] for line in prompt.splitlines()[3:] if line.startswith("+"))
+        return SimpleNamespace(choices=[SimpleNamespace(finish_reason="stop", message=SimpleNamespace(
+            content=__import__("json").dumps({"findings": [{
+                "category": "internal", "component": "Text", "description": "Internal change",
+                "evidence": line[:8].strip(),
+            }]}),
+        ))])
+    client.chat.completions.create.side_effect = response
     result = cache.generate(SimpleNamespace(client=client, model="test"), draft)
-    assert "лимит" in result["reason"]
-    client.chat.completions.create.assert_not_called()
+    assert "лимит" not in result["reason"]
+    assert result["analysis"]["fragment_count"] > 1
+    assert client.chat.completions.create.call_count == result["analysis"]["fragment_count"]
 
 
 def test_incomplete_model_output_is_not_accepted(tmp_path):

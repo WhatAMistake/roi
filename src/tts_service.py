@@ -100,7 +100,7 @@ def configuration(api_key=None, require_verified=True):
 
 def clone_timeout():
     try:
-        timeout = float(os.getenv("TTS_CLONE_TIMEOUT", "12"))
+        timeout = float(os.getenv("TTS_CLONE_TIMEOUT", "37"))
         if not math.isfinite(timeout) or not 0 < timeout <= 300:
             raise ValueError
         return timeout
