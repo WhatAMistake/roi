@@ -6,6 +6,7 @@ Run: py -m pytest tests/test_update_changelog_edit.py -v
 import sys
 import asyncio
 import html
+import time
 from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
@@ -408,3 +409,119 @@ async def test_in_flight_after_restart_is_not_sent_twice(tmp_path):
     assert bot.update_cache.pending() is None
     assert bot.update_cache._read()["_update_state"]["history"][-1]["recipients"]["7"]["status"] == "uncertain"
     assert all(call.args[0] != 7 for call in bot.send_long_message.await_args_list)
+
+
+def _enable_message_routing(bot, tb):
+    cls = tb.TelegramTherapistBot
+    bot._handle_message = cls._handle_message.__get__(bot, cls)
+    bot._process_text_message = cls._process_text_message.__get__(bot, cls)
+    bot._handle_cancel = cls._handle_cancel.__get__(bot, cls)
+    bot.message_queue = {}
+    bot.start_time = 0
+    bot.processed_flood_users = set()
+    bot.user_first_seen = {}
+    bot.user_last_active = {}
+    bot.silence_until = {}
+    bot.temp_associations = {}
+    bot.filmframe_state = {}
+
+
+async def _route_text(bot, text):
+    msg = _msg()
+    msg.date = SimpleNamespace(timestamp=time.time)
+    msg.text = text
+    await bot._handle_message(msg)
+    return msg
+
+
+@pytest.mark.asyncio
+async def test_repeated_preview_choices_then_skip_restore_chat_and_keyboard(tmp_path):
+    bot = _durable_bot(tmp_path)
+    import telegram_bot as tb
+    _enable_message_routing(bot, tb)
+    bot.user_states[42] = "update_confirm"
+    bot._check_and_notify_updates = AsyncMock()
+
+    for _ in range(4):
+        await _route_text(bot, "непонятно")
+        assert bot.message_queue[42] == []
+
+    msg = await _route_text(bot, "❌ Нет")
+    assert bot.user_states[42] == "chat"
+    assert bot.update_cache.pending() is None
+    assert bot.message_queue[42] == []
+    assert msg.answer.await_args.kwargs["reply_markup"] == tb.get_main_keyboard("ru")
+    bot._handle_chat = AsyncMock()
+    await _route_text(bot, "Продолжим")
+    bot._handle_chat.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("edit_state", ["update_edit_ru", "update_edit_en"])
+async def test_cancel_edit_keeps_draft_and_releases_queue(tmp_path, edit_state):
+    bot = _durable_bot(tmp_path)
+    import telegram_bot as tb
+    _enable_message_routing(bot, tb)
+    bot.user_states[42] = edit_state
+    before = bot.update_cache.pending()
+
+    for _ in range(4):
+        await _route_text(bot, " ")
+        assert bot.message_queue[42] == []
+    msg = await _route_text(bot, "Отмена")
+    assert bot.user_states[42] == "chat"
+    assert bot.update_cache.pending() == before
+    assert bot.message_queue[42] == []
+    assert msg.answer.await_args.kwargs["reply_markup"] == tb.get_main_keyboard("ru")
+
+
+@pytest.mark.asyncio
+async def test_update_input_failure_releases_own_queue_slot(tmp_path):
+    bot = _durable_bot(tmp_path)
+    import telegram_bot as tb
+    _enable_message_routing(bot, tb)
+    bot.user_states[42] = "update_confirm"
+    existing = time.time() - 1
+    bot.message_queue[42] = [existing]
+    bot._handle_update_confirm_input = AsyncMock(side_effect=RuntimeError("failure"))
+    with pytest.raises(RuntimeError):
+        await _route_text(bot, "да")
+    assert bot.message_queue[42] == [existing]
+
+
+@pytest.mark.asyncio
+async def test_cancel_failure_releases_own_queue_slot(tmp_path):
+    bot = _durable_bot(tmp_path)
+    import telegram_bot as tb
+    _enable_message_routing(bot, tb)
+    bot.user_states[42] = "update_edit_ru"
+    existing = time.time() - 1
+    bot.message_queue[42] = [existing]
+    bot._handle_cancel = AsyncMock(side_effect=RuntimeError("failure"))
+    with pytest.raises(RuntimeError):
+        await _route_text(bot, "Отмена")
+    assert bot.message_queue[42] == [existing]
+
+
+@pytest.mark.asyncio
+async def test_voice_update_input_does_not_release_unrelated_queue_slot(tmp_path):
+    bot = _durable_bot(tmp_path)
+    import telegram_bot as tb
+    _enable_message_routing(bot, tb)
+    bot.user_states[42] = "update_confirm"
+    bot.message_queue[42] = [time.time()]
+    await bot._process_text_message(_msg(), "непонятно", is_voice=True)
+    assert len(bot.message_queue[42]) == 1
+
+
+@pytest.mark.asyncio
+async def test_broadcast_restores_main_keyboard(tmp_path):
+    bot = _durable_bot(tmp_path)
+    import telegram_bot as tb
+    bot.user_states[42] = "update_confirm"
+    bot._check_and_notify_updates = AsyncMock()
+    await bot._process_update_broadcast()
+    report = bot.send_long_message.await_args
+    assert report.args[0] == 42
+    assert report.kwargs["reply_markup"] == tb.get_main_keyboard("ru")
+    assert bot.user_states[42] == "chat"

@@ -114,7 +114,7 @@ class Music:
         if not available:
             sent = self.store().sent(uid)
             all_sent = bool(configured) and all(x["id"] in sent for x in configured)
-            text = ("I’ve shared all my music with you." if lang == "en" else "Я уже поделился с тобой всей своей музыкой.") if all_sent else (
+            text = ("My music is now fully yours. Thank you for being here." if lang == "en" else "Моя коллекция теперь вся у тебя. Спасибо, что был рядом.") if all_sent else (
                 "My music isn’t available just now." if lang == "en" else "Моя музыка сейчас недоступна.")
             await message.answer(text)
             return

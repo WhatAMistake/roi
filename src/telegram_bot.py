@@ -1614,15 +1614,20 @@ class TelegramTherapistBot:
 
         cache.resolve(pending)
         self._clear_pending_update(self.admin_id)
-        # A newer deployment may have arrived while this draft was pending.
-        asyncio.create_task(self._check_and_notify_updates(delay=False))
         report = (
             f"Рассылка: отправлено в этой попытке: {sent_count}; "
             f"неизвестный результат: {len(failed_users)}."
             + (" Повторная автоматическая отправка отключена во избежание дублей."
                if failed_users else "")
         )
-        await self.send_long_message(self.admin_id, report)
+        try:
+            await self.send_long_message(
+                self.admin_id, report,
+                reply_markup=get_main_keyboard(self.user_langs.get(self.admin_id, DEFAULT_LANG)),
+            )
+        finally:
+            # Check after restoring the keyboard so a newer preview isn't overwritten.
+            asyncio.create_task(self._check_and_notify_updates(delay=False))
     async def _handle_reset(self, message: types.Message):
         user_id = message.from_user.id
         async with self._get_user_lock(user_id):
@@ -1741,17 +1746,24 @@ class TelegramTherapistBot:
             reply_markup=get_main_keyboard(lang)
         )
     
-    async def _process_text_message(self, message: types.Message, text: str, is_voice: bool = False):
+    async def _process_text_message(
+        self, message: types.Message, text: str, is_voice: bool = False,
+        queue_entry: Optional[float] = None,
+    ):
         """Обработка текстового сообщения (или распознанного голоса)."""
         user_id = message.from_user.id
         # Intercept localized cancel texts so they aren't processed as content while in a special state
         t_ru_cancel = t('ru', 'button_cancel')
         t_en_cancel = t('en', 'button_cancel')
         if text and text.strip() in (t_ru_cancel, t_en_cancel, '/cancel', '❌ Отмена', 'Cancel'):
-            await self._handle_cancel(message)
-            # This path is reached via the catch-all handler, which enqueues first.
-            if user_id in self.message_queue and self.message_queue[user_id]:
-                self.message_queue[user_id].pop(0)
+            try:
+                await self._handle_cancel(message)
+            finally:
+                if queue_entry is not None:
+                    try:
+                        self.message_queue.get(user_id, []).remove(queue_entry)
+                    except ValueError:
+                        pass
             return
         
         # Проверяем подтверждение рассылки
@@ -1766,23 +1778,29 @@ class TelegramTherapistBot:
             return
 
         # Подтверждение / правка changelog обновления (admin)
-        if user_id == self.admin_id and state == "update_confirm":
-            await self._handle_update_confirm_input(message, text)
-            return
-        if user_id == self.admin_id and state in ("update_edit_ru", "update_edit_en"):
-            await self._handle_update_edit_input(message, state, text)
-            return
-        # Backward-compatible: pending draft without explicit state
-        if (
-            user_id == self.admin_id
-            and hasattr(self, "pending_update_changelogs")
-            and state == "chat"
-        ):
-            choice = text.strip().lower()
-            if choice in _UPDATE_CONFIRM_YES | _UPDATE_CONFIRM_EDIT | _UPDATE_CONFIRM_NO:
+        choice = (text or "").strip().lower()
+        update_input = user_id == self.admin_id and (
+            state in ("update_confirm", "update_edit_ru", "update_edit_en")
+            # Backward-compatible: pending draft without explicit state.
+            or (state == "chat" and hasattr(self, "pending_update_changelogs")
+                and choice in _UPDATE_CONFIRM_YES | _UPDATE_CONFIRM_EDIT | _UPDATE_CONFIRM_NO)
+        )
+        if update_input:
+            if state == "chat":
                 self.user_states[user_id] = "update_confirm"
-                await self._handle_update_confirm_input(message, text)
-                return
+                state = "update_confirm"
+            try:
+                if state == "update_confirm":
+                    await self._handle_update_confirm_input(message, text)
+                else:
+                    await self._handle_update_edit_input(message, state, text)
+            finally:
+                if queue_entry is not None:
+                    try:
+                        self.message_queue.get(user_id, []).remove(queue_entry)
+                    except ValueError:
+                        pass
+            return
 
         
         # Если язык еще не установлен, пробуем определить его один раз
@@ -1886,7 +1904,7 @@ class TelegramTherapistBot:
 
         # Но если мы здесь, значит это либо текст, либо другой тип сообщения.
         if message.text:
-            await self._process_text_message(message, message.text, is_voice=False)
+            await self._process_text_message(message, message.text, is_voice=False, queue_entry=now)
         elif message.voice:
             # Голосовые сообщения обрабатываются отдельно, но если попали сюда - игнорируем
             pass
