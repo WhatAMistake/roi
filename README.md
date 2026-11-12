@@ -236,6 +236,6 @@ python -m pytest tests/
 
 ## Лицензия
 
-MIT (без душнилова). Если хочется душнилова, см. [LICENSE](LICENSE).
+Стандартный MIT. Детальнее см. [LICENSE](LICENSE).
 
 [![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/WhatAMistake/badge.svg)](https://hub.xerj.org/contributors/WhatAMistake)
