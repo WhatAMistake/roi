@@ -77,6 +77,18 @@ def test_drops_unmarked_reasoning_dump():
     assert _sanitize_changelog(raw) == ""
 
 
+def test_long_bullets_are_preserved_without_truncation():
+    bullets = ["• " + ("Длинное описание изменения " * 10) + str(i) for i in range(4)]
+    assert _sanitize_changelog("\n".join(bullets)) == "\n".join(bullets)
+
+
+def test_oversized_release_note_is_rejected_not_truncated():
+    import pytest
+    from code_reviewer import _validate_notes
+    with pytest.raises(ValueError, match="Release note too long"):
+        _validate_notes({"ru": "• " + "т" * 3500, "en": "• Valid English text"})
+
+
 def test_extract_completion_ignores_reasoning_fields():
     message = SimpleNamespace(
         content="• Fixed the help text",

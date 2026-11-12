@@ -278,31 +278,34 @@ def _update_summary(pending, notes):
             if (not text or _is_empty_changelog(text) or _looks_technical(text)
                     or _UPDATE_SUMMARY_TECH.search(text)):
                 continue
-            # At most five escaped lines must fit together in one Telegram message.
-            text = text if len(text) <= 100 else text[:99].rstrip() + "…"
             if text.casefold() not in {entry.casefold() for entry in result}:
                 result.append(text)
-            if len(result) == 5:
-                break
         if result:
             break
     return result
 
 
 def _update_text_chunks(text, limit=3000):
-    """Escape before splitting, without cutting HTML entities or surrogate pairs."""
-    chunks, current, size, units = [], [], 0, 0
-    for char in text:
-        escaped = html.escape(char)
-        char_units = 2 if ord(char) > 0xFFFF else 1
-        if current and (size + len(escaped) > limit or units + char_units > limit):
-            chunks.append("".join(current))
-            current, size, units = [], 0, 0
-        current.append(escaped)
-        size += len(escaped)
-        units += char_units
-    if current:
-        chunks.append("".join(current))
+    """Split at whitespace when possible, preserving text and escaped entities."""
+    chunks = []
+    start = 0
+    while start < len(text):
+        end, size, units, last_break = start, 0, 0, None
+        while end < len(text):
+            char = text[end]
+            escaped_size = len(html.escape(char))
+            char_units = 2 if ord(char) > 0xFFFF else 1
+            if size + escaped_size > limit or units + char_units > limit:
+                break
+            size += escaped_size
+            units += char_units
+            end += 1
+            if char.isspace():
+                last_break = end
+        if end < len(text) and last_break and last_break - start >= (end - start) // 2:
+            end = last_break
+        chunks.append(html.escape(text[start:end]))
+        start = end
     return chunks
 
 
@@ -311,18 +314,39 @@ def _update_preview_parts(pending, notes):
     lines = ["📋 <b>Предпросмотр обновления</b>",
              f"Изменено файлов: <b>{len((pending or {}).get('paths', []))}</b>",
              "", "<b>Краткая сводка</b>"]
-    lines.extend("• " + html.escape(text) for text in summary)
-    if not summary:
-        lines.append("См. готовые тексты ниже.")
-    parts = ["\n".join(lines)]
-    for lang in ("ru", "en"):
-        for index, chunk in enumerate(_update_text_chunks(notes[lang])):
-            title = lang.upper() + (" — продолжение" if index else "")
-            parts.append(f"<b>Готовый текст {title}</b>\n{chunk}")
-    parts.append("Отправить?\n• <b>да</b> — разослать как есть\n"
+    shown = 0
+    for text in summary[:5]:
+        line = "• " + html.escape(text)
+        # Keep the initial message compact without chopping a finding in half.
+        if len("\n".join(lines)) + len(line) + 1 > 1800:
+            break
+        lines.append(line)
+        shown += 1
+    if not shown:
+        lines.append("Откройте сводку или готовые тексты кнопками ниже.")
+    if shown < len(summary):
+        lines.append(f"Показано {shown} из {len(summary)}. Полная сводка — по кнопке.")
+    lines.append("\nГотовые тексты RU и EN доступны по кнопкам, по страницам.")
+    lines.append("\nОтправить?\n• <b>да</b> — разослать как есть\n"
                  "• <b>править</b> — отредактировать RU, затем EN\n"
                  "• <b>нет</b> — пропустить это обновление")
-    return parts
+    return ["\n".join(lines)]
+
+
+def _update_detail_page(pending, notes, section, index):
+    if section == "summary":
+        text = "\n".join("• " + item for item in _update_summary(pending, notes))
+        title = "Полная сводка"
+        if not text:
+            text = "Нет доступной сводки. Откройте готовые тексты RU и EN."
+    else:
+        text = notes[section]
+        title = "Готовый текст " + section.upper()
+    chunks = _update_text_chunks(text)
+    index = max(0, min(index, len(chunks) - 1))
+    return (f"<b>{title}</b> — страница {index + 1}/{len(chunks)}\n"
+            f"{chunks[index]}\n\n"
+            "Для перехода используйте кнопки; подтвердить или править можно в любой момент."), index
 
 
 class DeliveryError(RuntimeError):
@@ -425,7 +449,12 @@ def get_update_confirm_keyboard() -> ReplyKeyboardMarkup:
     builder.add(KeyboardButton(text="✅ Да"))
     builder.add(KeyboardButton(text="✏️ Править"))
     builder.add(KeyboardButton(text="❌ Нет"))
-    builder.adjust(3)
+    builder.add(KeyboardButton(text="📋 Сводка"))
+    builder.add(KeyboardButton(text="📄 RU"))
+    builder.add(KeyboardButton(text="📄 EN"))
+    builder.add(KeyboardButton(text="⬅️ Назад"))
+    builder.add(KeyboardButton(text="Вперёд ➡️"))
+    builder.adjust(3, 3, 2)
     return builder.as_markup(resize_keyboard=True)
 
 
@@ -437,6 +466,10 @@ _UPDATE_CONFIRM_EDIT = {
 _UPDATE_CONFIRM_NO = {
     "нет", "no", "н", "n", "cancel", "отмена", "❌ нет", "❌",
 }
+_UPDATE_DETAILS = {"📋 сводка": "summary", "сводка": "summary",
+                   "📄 ru": "ru", "ru": "ru", "📄 en": "en", "en": "en"}
+_UPDATE_PREVIOUS = {"⬅️ назад", "назад"}
+_UPDATE_NEXT = {"вперёд ➡️", "вперёд", "вперед"}
 
 
 class TelegramTherapistBot:
@@ -1685,6 +1718,8 @@ class TelegramTherapistBot:
         """Drop pending update changelogs and leave the update-confirm flow."""
         if hasattr(self, "pending_update_changelogs"):
             del self.pending_update_changelogs
+        if hasattr(self, "pending_update_preview_page"):
+            del self.pending_update_preview_page
         target_id = admin_id if admin_id is not None else self.admin_id
         if self.user_states.get(target_id, "").startswith("update_"):
             self.user_states[target_id] = "chat"
@@ -1742,6 +1777,7 @@ class TelegramTherapistBot:
                 reply_markup=get_update_confirm_keyboard() if index == len(parts) - 1 else None,
             )
         self.pending_update_changelogs = {"ru": changelogs["ru"], "en": changelogs["en"]}
+        self.pending_update_preview_page = None
         self.user_states[chat_id] = "update_confirm"
         return "review"
 
@@ -1791,6 +1827,22 @@ class TelegramTherapistBot:
                 reply_markup=get_main_keyboard(self.user_langs.get(user_id, DEFAULT_LANG)),
             )
             return
+        if choice in _UPDATE_DETAILS.keys() | _UPDATE_PREVIOUS | _UPDATE_NEXT:
+            page = getattr(self, "pending_update_preview_page", None)
+            if choice in _UPDATE_DETAILS:
+                section, index = _UPDATE_DETAILS[choice], 0
+            elif isinstance(page, tuple) and len(page) == 2:
+                section, index = page
+                index += 1 if choice in _UPDATE_NEXT else -1
+            else:
+                await message.answer("Сначала откройте сводку или текст RU/EN.",
+                                     reply_markup=get_update_confirm_keyboard())
+                return
+            detail, index = _update_detail_page(pending, changelogs, section, index)
+            await self.send_long_message(user_id, detail, parse_mode="HTML",
+                                         reply_markup=get_update_confirm_keyboard())
+            self.pending_update_preview_page = (section, index)
+            return
         if choice in _UPDATE_CONFIRM_YES:
             await self._process_update_broadcast()
             return
@@ -1817,7 +1869,7 @@ class TelegramTherapistBot:
             return
 
         await message.answer(
-            "Ответьте <b>да</b>, <b>править</b> или <b>нет</b>.",
+            "Откройте сводку или текст RU/EN либо ответьте <b>да</b>, <b>править</b> или <b>нет</b>.",
             parse_mode="HTML",
             reply_markup=get_update_confirm_keyboard(),
         )
@@ -2120,7 +2172,8 @@ class TelegramTherapistBot:
             state in ("update_confirm", "update_edit_ru", "update_edit_en")
             # Backward-compatible: pending draft without explicit state.
             or (state == "chat" and hasattr(self, "pending_update_changelogs")
-                and choice in _UPDATE_CONFIRM_YES | _UPDATE_CONFIRM_EDIT | _UPDATE_CONFIRM_NO)
+                and choice in (_UPDATE_CONFIRM_YES | _UPDATE_CONFIRM_EDIT | _UPDATE_CONFIRM_NO
+                               | _UPDATE_DETAILS.keys() | _UPDATE_PREVIOUS | _UPDATE_NEXT))
         )
         if update_input:
             if state == "chat":

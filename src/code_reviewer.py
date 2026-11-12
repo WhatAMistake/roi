@@ -353,9 +353,8 @@ _ANALYSIS_PREFIX_RE = re.compile(
     r"смотрю|давайте|анализ|рассужд|в файле|в диффе"
     r")"
 )
-MAX_CHANGELOG_BULLETS = 3
 MAX_BULLET_CHARS = 140
-MAX_CHANGELOG_CHARS = 420
+MAX_CHANGELOG_CHARS = 3500
 
 
 def _extract_completion_text(response) -> str:
@@ -441,23 +440,17 @@ def _sanitize_changelog(text: str) -> str:
             continue
         if _looks_technical(line):
             continue
-        # Long prose is almost always leftover reasoning, not a release note.
-        if len(line) > MAX_BULLET_CHARS:
-            if not was_bullet:
-                continue
-            line = line[: MAX_BULLET_CHARS - 1].rstrip(" ,;:") + "…"
+        # Long unmarked prose is usually reasoning. Explicit bullets must not
+        # be cut mid-sentence: they are the exact text approved for delivery.
+        if len(line) > MAX_BULLET_CHARS and not was_bullet:
+            continue
         if line not in bullets:
             bullets.append(line)
-        if len(bullets) >= MAX_CHANGELOG_BULLETS:
-            break
 
     if not bullets:
         return ""
 
-    result = "\n".join(f"• {item}" for item in bullets)
-    if len(result) > MAX_CHANGELOG_CHARS:
-        result = result[: MAX_CHANGELOG_CHARS - 1].rstrip() + "…"
-    return result
+    return "\n".join(f"• {item}" for item in bullets)
 
 
 def generate_changelog_with_llm(
@@ -835,8 +828,11 @@ def _validate_findings(parsed, fragment):
             )
         if not any(matches(line) for line in changed_lines):
             raise _InvalidModelData("Evidence not found in changed lines")
+        if len(item["description"].strip()) > MAX_CHANGELOG_CHARS:
+            raise _InvalidModelData("Finding description too long")
         result.append({key: item[key].strip()[:500] for key in
                        ("category", "component", "description", "evidence")})
+        result[-1]["description"] = item["description"].strip()
         result[-1]["path"] = fragment["path"]
     return result
 
@@ -981,6 +977,8 @@ def _validate_notes(parsed):
         notes[lang] = _sanitize_changelog(parsed[lang])
         if not notes[lang]:
             raise _InvalidModelData("Empty or unsafe release note")
+        if len(notes[lang]) > MAX_CHANGELOG_CHARS:
+            raise _InvalidModelData("Release note too long")
     return notes
 
 

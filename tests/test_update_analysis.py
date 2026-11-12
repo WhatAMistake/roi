@@ -211,6 +211,22 @@ def test_invalid_json_and_fabricated_evidence_are_retried(tmp_path):
     assert model.client.chat.completions.create.call_count == 3
 
 
+def test_long_finding_and_release_notes_keep_complete_text(tmp_path):
+    cache, draft = setup_change(tmp_path, "old text\n", "new text\n")
+    description = "Изменение с подробностями " * 25
+    ru = "• " + "Подробности обновления " * 30
+    en = "• " + "Update details " * 30
+    model = mock_therapist()
+    model.client.chat.completions.create.side_effect = [
+        response({"findings": [{"category": "change", "component": "Text",
+                                "description": description, "evidence": "new text"}]}),
+        response({"ru": ru, "en": en}),
+    ]
+    result = cache.generate(model, draft)
+    assert result["analysis"]["findings"][0]["description"] == description.strip()
+    assert result["notes"] == {"ru": ru.strip(), "en": en.strip()}
+
+
 def test_empty_findings_are_saved_and_do_not_block_other_fragments(tmp_path):
     put(tmp_path, "src/i18n.py", "old text\n")
     put(tmp_path, "src/telegram_bot.py", "old message\n")

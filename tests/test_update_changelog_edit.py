@@ -6,6 +6,7 @@ Run: py -m pytest tests/test_update_changelog_edit.py -v
 import sys
 import asyncio
 import html
+import re
 import time
 from html.parser import HTMLParser
 from pathlib import Path
@@ -83,8 +84,8 @@ async def test_preview_contains_edit_option():
     bot, _ = _make_bot()
     preview = bot._format_update_preview(bot.pending_update_changelogs)
     assert "править" in preview
-    assert "Старый RU" in preview
-    assert "Old EN" in preview
+    assert "RU и EN" in preview
+    assert "Old EN" not in preview
 
 
 @pytest.mark.asyncio
@@ -104,7 +105,7 @@ async def test_preview_is_compact_and_hides_technical_details(tmp_path):
     bot.update_cache.update(pending)
     preview = bot._format_update_preview(pending["notes"])
     for text in ("Изменено файлов", "Краткая сводка", "Исправлен ответ",
-                 "Готовый текст RU", "Готовый текст EN", "Отправить?"):
+                 "RU и EN", "Отправить?"):
         assert text in preview
     for text in ("secret source code", "private prompt", "src/", "Упрощён кэш",
                  "Эффект неизвестен", "условие оператора", "Компоненты:"):
@@ -134,7 +135,10 @@ async def test_edit_flow_saves_ru_then_en_and_returns_to_confirm():
     ]
     assert preview_calls, "expected updated preview after EN save"
     assert "Новый русский changelog" in preview_calls[-1].args[1]
-    assert "New English changelog" in preview_calls[-1].args[1]
+    assert "New English changelog" not in preview_calls[-1].args[1]
+    bot.send_long_message.reset_mock()
+    await bot._handle_update_confirm_input(msg, "📄 EN")
+    assert "New English changelog" in bot.send_long_message.await_args.args[1]
 
 
 @pytest.mark.asyncio
@@ -399,11 +403,12 @@ async def test_long_preview_is_bounded_escaped_and_contains_full_notes(tmp_path)
     bot.update_cache.update(pending)
     assert await bot._check_and_notify_updates(delay=False) == "review"
     calls = bot.send_long_message.await_args_list
-    assert len(calls) > 1
+    assert len(calls) == 1
     messages = [call.args[1] for call in calls]
     assert all(len(message) <= 4000 and len(message.encode("utf-16-le")) // 2 <= 4000
                for message in messages)
-    assert messages[0].count("• ") == 5 and "…" in messages[0]
+    assert "Полная сводка" in messages[0] and "RU и EN" in messages[0]
+    assert ru not in messages[0] and en not in messages[0]
 
     class StrictHTML(HTMLParser):
         def handle_starttag(self, tag, attrs):
@@ -412,14 +417,49 @@ async def test_long_preview_is_bounded_escaped_and_contains_full_notes(tmp_path)
             assert tag == "b"
         def handle_entityref(self, name):
             assert name in {"amp", "lt", "gt", "quot"}
-    for message in messages:
-        StrictHTML(convert_charrefs=False).feed(message)
-    for lang, expected in (("RU", ru), ("EN", en)):
-        chunks = [message.split("\n", 1)[1] for message in messages
-                  if message.startswith(f"<b>Готовый текст {lang}")]
+    for section, expected in (("сводка", "\n".join(
+            "• " + item["description"] for item in pending["analysis"]["findings"])),
+            ("RU", ru), ("EN", en)):
+        bot.send_long_message.reset_mock()
+        await bot._handle_update_confirm_input(_msg(), section)
+        chunks = []
+        while True:
+            message = bot.send_long_message.await_args.args[1]
+            assert len(message) <= 4000 and len(message.encode("utf-16-le")) // 2 <= 4000
+            StrictHTML(convert_charrefs=False).feed(message)
+            chunks.append(message.split("\n", 1)[1].rsplit("\n\nДля перехода", 1)[0])
+            page, count = re.search(r"страница (\d+)/(\d+)", message).groups()
+            if page == count:
+                break
+            await bot._handle_update_confirm_input(_msg(), "вперёд")
         assert html.unescape("".join(chunks)) == expected
-    assert calls[-1].kwargs["reply_markup"] is not None
-    assert all(call.kwargs["reply_markup"] is None for call in calls[:-1])
+        assert bot.send_long_message.await_args.kwargs["reply_markup"] is not None
+
+
+@pytest.mark.asyncio
+async def test_detail_navigation_routing_and_stale_draft(tmp_path):
+    bot = _durable_bot(tmp_path)
+    import telegram_bot as tb
+    _enable_message_routing(bot, tb)
+    pending = bot.update_cache.pending()
+    pending["notes"]["ru"] = "• " + "Длинный текст с деталями. " * 120
+    bot.update_cache.update(pending)
+    await bot._send_update_preview(42, pending["notes"])
+    await _route_text(bot, "📄 RU")
+    first = bot.send_long_message.await_args.args[1]
+    assert "страница 1/2" in first
+    await _route_text(bot, "Вперёд ➡️")
+    assert "страница 2/2" in bot.send_long_message.await_args.args[1]
+    await _route_text(bot, "⬅️ Назад")
+    assert bot.send_long_message.await_args.args[1] == first
+    assert bot.message_queue[42] == []
+    pending["notes"]["ru"] = "Другой текст"
+    bot.update_cache.update(pending)
+    bot.send_long_message.reset_mock()
+    msg = await _route_text(bot, "📄 RU")
+    bot.send_long_message.assert_not_awaited()
+    assert "некорректны" in msg.answer.await_args.args[0]
+    assert bot.user_states[42] == "chat"
 
 
 @pytest.mark.asyncio

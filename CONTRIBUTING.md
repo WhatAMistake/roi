@@ -58,6 +58,9 @@ issue; the reset scripts refuse to overwrite the new state.
 With a valid `ADMIN_ID`, the bot restores the draft after restart. In the private
 admin chat, `/updates` checks or resumes it; **править** edits RU and EN,
 **да** approves delivery, and **нет** explicitly skips the captured update.
+The initial preview shows a compact summary. Use **📋 Сводка**, **📄 RU** and
+**📄 EN** to inspect the complete summary and the exact texts for delivery;
+**⬅️ Назад** and **Вперёд ➡️** navigate longer sections one page at a time.
 If old snapshots cannot be recovered, or no user-facing changes are found, the
 notice provides `/updates skip <draft-id>` to explicitly skip that frozen draft
 without broadcasting. This advances the baseline to the captured files, so
