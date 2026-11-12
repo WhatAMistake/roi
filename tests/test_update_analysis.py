@@ -138,6 +138,19 @@ def test_missing_snapshot_does_not_block_other_fragments(tmp_path):
     assert model.client.chat.completions.create.call_count == 1
 
 
+@pytest.mark.parametrize("old,new", [("one\r\ntwo\r\n", "one\ntwo\n"),
+                                     ("one\n", "one")])
+def test_line_ending_only_change_needs_no_model(tmp_path, old, new):
+    cache, draft = setup_change(tmp_path, old, new)
+    model = mock_therapist()
+    result = cache.generate(model, draft)
+    assert result["analysis"]["unchanged"] == ["src/i18n.py"]
+    assert result["analysis"]["fragment_count"] == 0
+    assert not result["analysis"]["missing"]
+    assert result["reason"].startswith("Модель не нашла пользовательских изменений")
+    model.client.chat.completions.create.assert_not_called()
+
+
 def test_git_recovery_checks_saved_hash(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=tmp_path, check=True)
@@ -219,6 +232,8 @@ def test_empty_findings_are_saved_and_do_not_block_other_fragments(tmp_path):
     assert [] in result["analysis"]["fragments"].values()
     calls = model.client.chat.completions.create.call_args_list
     assert [call.kwargs["model"] for call in calls] == ["analysis", "analysis", "mock"]
+    assert [call.kwargs["reasoning_effort"] for call in calls] == ["high", "high", "medium"]
+    assert all(set(call.kwargs) == {"model", "messages", "reasoning_effort"} for call in calls)
 
 
 @pytest.mark.parametrize("content,finish,diagnostic", [

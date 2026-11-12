@@ -124,7 +124,7 @@ async def test_unique_sends_exhaustion_file_id_and_restart(setup_music):
                for call in owner.bot.send_audio.await_args_list)
     assert all(call.kwargs["parse_mode"] is None for call in owner.bot.send_audio.await_args_list)
     await feature.send(msg, 7, "death")
-    assert "all my music" in msg.answer.await_args.args[0]
+    assert msg.answer.await_args.args[0] == "My music is now fully yours. Thank you for being here."
     assert owner.bot.send_audio.await_count == 7
     restarted = music.Music(owner)
     assert len(restarted.store().sent(7)) == 7

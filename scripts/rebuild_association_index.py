@@ -33,6 +33,14 @@ def get_point_id(given: str, term: str) -> str:
     return str(uuid.uuid5(NAMESPACE_UUID, f"{given}:{term}"))
 
 
+def _embedding_dimension(embedder):
+    """Support both current and older sentence-transformers versions."""
+    current = getattr(embedder, "get_embedding_dimension", None)
+    if callable(current):
+        return current()
+    return embedder.get_sentence_embedding_dimension()
+
+
 def rebuild_association_index(
     data_dir: str | Path = "data",
     collection_name: str = DEFAULT_COLLECTION,
@@ -59,7 +67,7 @@ def rebuild_association_index(
         print(f"[REBUILD] Loading embedding model: {model_name}...")
         embedder = SentenceTransformer(model_name)
 
-    dim = embedder.get_sentence_embedding_dimension()
+    dim = _embedding_dimension(embedder)
     print(f"[REBUILD] Embedding dimension: {dim}")
 
     # Initialize Qdrant

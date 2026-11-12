@@ -166,6 +166,7 @@ def _durable_bot(tmp_path):
     bot._process_update_broadcast = cls._process_update_broadcast.__get__(bot, cls)
     bot._resume_update_broadcast = cls._resume_update_broadcast.__get__(bot, cls)
     bot._check_and_notify_updates = cls._check_and_notify_updates.__get__(bot, cls)
+    bot._skip_unanalysable_update = cls._skip_unanalysable_update.__get__(bot, cls)
     return bot
 
 
@@ -213,6 +214,69 @@ async def test_unproven_analysis_is_incomplete(tmp_path, damage):
     assert "не завершён" in bot.send_long_message.await_args.args[1]
     await bot._process_update_broadcast()
     assert bot.update_cache._read() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["missing", "no_changes"])
+async def test_explicit_skip_of_unrecoverable_or_empty_draft(tmp_path, kind):
+    bot = _durable_bot(tmp_path)
+    pending = bot.update_cache.pending()
+    pending["notes"] = {"ru": "", "en": ""}
+    if kind == "missing":
+        pending["reason"] = "Не удалось завершить анализ."
+        pending["analysis"]["missing"] = ["src/telegram_bot.py"]
+    else:
+        pending["reason"] = "Модель не нашла пользовательских изменений."
+    bot.update_cache.update(pending)
+    before = bot.update_cache._read()
+    assert await bot._check_and_notify_updates(delay=False) == (
+        "incomplete" if kind == "missing" else "no_changes")
+    assert f"/updates skip {pending['id']}" in bot.send_long_message.await_args.args[1]
+    await bot._skip_unanalysable_update(_msg(7), ["skip", pending["id"]])
+    await bot._skip_unanalysable_update(_msg(), ["skip", "outdated"])
+    assert bot.update_cache._read() == before
+    # Newer changes are not included in the frozen draft being skipped.
+    (tmp_path / "src" / "telegram_bot.py").write_bytes(b"newer\n")
+    await bot._skip_unanalysable_update(_msg(), ["skip", pending["id"]])
+    assert bot.update_cache.pending() is None
+    assert bot.update_cache.prepare()["snapshots"]["src/telegram_bot.py"] == "newer\n"
+
+
+@pytest.mark.asyncio
+async def test_skip_command_cannot_discard_review_or_failed_model_draft(tmp_path):
+    bot = _durable_bot(tmp_path)
+    pending = bot.update_cache.pending()
+    before = bot.update_cache._read()
+    await bot._skip_unanalysable_update(_msg(), ["skip", pending["id"]])
+    assert bot.update_cache._read() == before
+    pending["status"] = "sending"
+    pending["analysis"]["missing"] = ["src/telegram_bot.py"]
+    bot.update_cache.update(pending)
+    before = bot.update_cache._read()
+    await bot._skip_unanalysable_update(_msg(), ["skip", pending["id"]])
+    assert bot.update_cache._read() == before
+    pending["status"] = "review"
+    pending["analysis"]["missing"] = []
+    pending["notes"] = {"ru": "", "en": ""}
+    pending["analysis"]["failures"] = ["LLM request failed"]
+    bot.update_cache.update(pending)
+    before = bot.update_cache._read()
+    await bot._skip_unanalysable_update(_msg(), ["skip", pending["id"]])
+    assert bot.update_cache._read() == before
+
+
+@pytest.mark.asyncio
+async def test_line_ending_only_draft_can_be_skipped(tmp_path):
+    bot = _durable_bot(tmp_path)
+    pending = bot.update_cache.pending()
+    pending["notes"] = {"ru": "", "en": ""}
+    pending["reason"] = "Модель не нашла пользовательских изменений."
+    pending["analysis"].update({"fragment_count": 0, "fragments": {},
+                                "unchanged": pending["paths"]})
+    bot.update_cache.update(pending)
+    assert await bot._check_and_notify_updates(delay=False) == "no_changes"
+    await bot._skip_unanalysable_update(_msg(), ["skip", pending["id"]])
+    assert bot.update_cache.pending() is None
 
 
 @pytest.mark.asyncio

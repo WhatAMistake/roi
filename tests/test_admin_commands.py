@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 # Add src to path
 sys.path.insert(0, 'src')
 
-def test_admin_commands():
+def _check_admin_commands():
     """Test admin command logic."""
     print("=" * 60)
     print("TESTING ADMIN COMMANDS")
@@ -144,6 +144,10 @@ def test_admin_commands():
         shutil.rmtree(test_dir)
         print(f"\n🧹 Cleaned up test directory: {test_dir}")
 
+def test_admin_commands():
+    assert _check_admin_commands()
+
+
 if __name__ == "__main__":
-    success = test_admin_commands()
+    success = _check_admin_commands()
     sys.exit(0 if success else 1)

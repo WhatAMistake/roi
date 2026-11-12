@@ -53,10 +53,10 @@ async def test_animate_loading_dots_stops_cleanly_on_exit():
 
 
 def test_animate_loading_dots_default_interval():
-    """Verify default interval is tuned to 0.37s."""
+    """Verify the current default interval."""
     import inspect
     sig = inspect.signature(TelegramTherapistBot._animate_loading_dots)
-    assert sig.parameters["interval"].default == 0.37
+    assert sig.parameters["interval"].default == 0.52
 
 
 

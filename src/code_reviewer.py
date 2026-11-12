@@ -657,7 +657,7 @@ def _recover_snapshot(root: Path, rel: str, digest: str) -> Optional[str]:
 
 def collect_update_diff(root: Path, baseline: dict, old_snapshots: dict, pending: dict) -> dict:
     """Compare the frozen draft to the last confirmed hashes, never to HEAD."""
-    files, missing = [], []
+    files, missing, unchanged = [], [], []
     added = removed = 0
     existing_commands = set(EXISTING_COMMANDS)
     for rel, content in old_snapshots.items():
@@ -682,14 +682,15 @@ def collect_update_diff(root: Path, baseline: dict, old_snapshots: dict, pending
             lineterm="", n=3,
         ))
         if not lines:
-            # Hash-only changes (e.g. line endings) cannot be classified from
-            # a line-oriented diff; do not invent a behavioral change.
-            missing.append(rel)
+            # Both snapshots are known, but their line content is identical
+            # (e.g. CRLF -> LF or a final newline). No model analysis is needed.
+            unchanged.append(rel)
             continue
         added += sum(line.startswith("+") for line in lines[2:])
         removed += sum(line.startswith("-") for line in lines[2:])
         files.append({"path": rel, "lines": lines})
-    return {"files": files, "missing": missing, "added": added, "removed": removed,
+    return {"files": files, "missing": missing, "unchanged": unchanged,
+            "added": added, "removed": removed,
             "file_count": len(pending["paths"]), "existing_commands": sorted(existing_commands)}
 
 
@@ -773,7 +774,7 @@ def _model_json(therapist, system: str, content: str, validator, attempts: int =
                 model=model,
                 messages=[{"role": "system", "content": system},
                           {"role": "user", "content": content}],
-                temperature=0.1, max_tokens=1600, timeout=30.0,
+                reasoning_effort="high" if use_analysis_model else "medium",
             )
         except TimeoutError:
             last_error = "TimeoutError: LLM request timed out"
@@ -1242,6 +1243,7 @@ class UpdateCache:
             current["analysis"] = {
                 "version": _UPDATE_ANALYSIS_VERSION, "fragments": saved,
                 "findings": findings, "missing": change_set["missing"], "failures": failures,
+                "unchanged": change_set["unchanged"],
                 "file_count": change_set["file_count"], "added": change_set["added"],
                 "removed": change_set["removed"], "fragment_count": len(fragments),
             }

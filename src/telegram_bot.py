@@ -174,7 +174,11 @@ def _update_review_state(pending, notes):
             return "incomplete"
         count, fragments = analysis.get("fragment_count"), analysis.get("fragments")
         if (type(count) is not int or count < 0 or not isinstance(fragments, dict)
-                or len(fragments) < count or (pending.get("paths") and count == 0)
+                or len(fragments) < count
+                or (pending.get("paths") and count == 0
+                    and (not isinstance(analysis.get("unchanged"), list)
+                         or not all(isinstance(path, str) for path in analysis["unchanged"])
+                         or sorted(analysis["unchanged"]) != sorted(pending["paths"])))
                 or not all(isinstance(value, list) for value in fragments.values())
                 or not isinstance(analysis.get("findings"), list)
                 or not isinstance(analysis.get("missing"), list)
@@ -193,11 +197,25 @@ def _update_review_state(pending, notes):
     return "review"
 
 
-def _update_review_notice(state):
+def _update_review_notice(state, pending=None):
+    pending = pending if isinstance(pending, dict) else {}
+    draft_id = pending.get("id", "")
+    skip = ""
+    if (pending.get("status") == "review" and (state == "no_changes" or (
+        state == "incomplete" and isinstance(pending.get("analysis"), dict)
+        and pending["analysis"].get("missing")
+    ))) and isinstance(draft_id, str) and re.fullmatch(r"[0-9a-f]{32}", draft_id):
+        skip = (
+            "\nЧтобы явно пропустить этот черновик без рассылки и перейти к новым изменениям: "
+            f"/updates skip {draft_id}"
+        )
     if state == "no_changes":
-        return "ℹ️ Пользовательских изменений не найдено. Рассылка не требуется; черновик сохранён."
+        return "ℹ️ Пользовательских изменений не найдено. Рассылка не требуется; черновик сохранён." + skip
     if state == "invalid":
         return "⚠️ Тексты RU и EN отсутствуют или некорректны. Рассылка недоступна; черновик сохранён."
+    if skip:
+        return ("⚠️ Анализ обновления не завершён: не удалось восстановить предыдущие снимки "
+                "или сравнить некоторые файлы. Черновик сохранён." + skip)
     return "⚠️ Анализ обновления не завершён. Черновик сохранён; повторите /updates."
 
 
@@ -758,6 +776,10 @@ class TelegramTherapistBot:
         @self.dp.message(Command("updates"))
         async def cmd_updates(message: types.Message):
             if message.from_user.id != self.admin_id or not self.admin_id:
+                return
+            args = (message.text or "").split()
+            if len(args) > 1:
+                await self._skip_unanalysable_update(message, args[1:])
                 return
             result = await self._check_and_notify_updates(delay=False, retry_generation=True)
             if result == "idle":
@@ -1375,13 +1397,35 @@ class TelegramTherapistBot:
         if self.user_states.get(target_id, "").startswith("update_"):
             self.user_states[target_id] = "chat"
 
+    async def _skip_unanalysable_update(self, message: types.Message, args: list[str]) -> None:
+        """Explicitly skip only the identified unrecoverable or no-change draft."""
+        if not self.admin_id or message.from_user.id != self.admin_id:
+            return
+        async with self.update_check_lock:
+            pending = self.update_cache.pending()
+            state = _update_review_state(pending, pending.get("notes")) if pending else None
+            analysis = (pending or {}).get("analysis")
+            missing = analysis.get("missing", []) if isinstance(analysis, dict) else []
+            if (len(args) != 2 or args[0] != "skip" or not pending
+                    or pending.get("id") != args[1]
+                    or pending.get("status") != "review"
+                    or not (state == "no_changes" or (state == "incomplete" and missing))):
+                await message.answer("Черновик изменился или его нельзя пропустить этой командой. Повторите /updates.")
+                return
+            self.update_cache.resolve(pending)
+            self._clear_pending_update(message.from_user.id)
+        await message.answer(
+            "Черновик пропущен без рассылки. Для проверки новых изменений вызовите /updates.",
+            reply_markup=get_main_keyboard(self.user_langs.get(message.from_user.id, DEFAULT_LANG)),
+        )
+
     def _format_update_preview(self, changelogs: dict) -> str:
         """Build HTML preview of RU/EN changelogs for admin confirmation."""
         cache = getattr(self, "update_cache", None)
         pending = (cache.pending() or {}) if isinstance(cache, UpdateCache) else None
         state = _update_review_state(pending, changelogs)
         if state != "review":
-            return _update_review_notice(state)
+            return _update_review_notice(state, pending)
         return "\n\n".join(_update_preview_parts(pending, changelogs))
 
     async def _send_update_preview(self, chat_id: int, changelogs: dict) -> str:
@@ -1392,7 +1436,7 @@ class TelegramTherapistBot:
         if state != "review":
             self._clear_pending_update(chat_id)
             await self.send_long_message(
-                chat_id, _update_review_notice(state),
+                chat_id, _update_review_notice(state, pending),
                 reply_markup=get_main_keyboard(self.user_langs.get(chat_id, DEFAULT_LANG)),
             )
             return state

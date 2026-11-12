@@ -20,6 +20,7 @@ Additional hybrid-scoring (Exact Match Boost + similarity noise floor) criteria:
 import json
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -35,7 +36,20 @@ from src.crowd_association_service import (
     association_evidence_weight,
     is_exact_lexical_match,
 )
-from scripts.rebuild_association_index import rebuild_association_index
+from scripts.rebuild_association_index import _embedding_dimension, rebuild_association_index
+
+
+def test_embedding_dimension_supports_current_and_legacy_api():
+    def legacy_called():
+        raise AssertionError("legacy API should not be called when the current API exists")
+
+    assert _embedding_dimension(SimpleNamespace(
+        get_embedding_dimension=lambda: 384,
+        get_sentence_embedding_dimension=legacy_called,
+    )) == 384
+    assert _embedding_dimension(SimpleNamespace(
+        get_sentence_embedding_dimension=lambda: 256,
+    )) == 256
 
 
 # Criterion 1: One respondent entering the same word twice does not duplicate respondent frequency

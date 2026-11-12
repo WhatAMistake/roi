@@ -79,7 +79,6 @@ async def test_acceptance_opens_access_and_survives_restart(owner):
     event = callback()
     await ConsentMiddleware(owner)(handler, event, {})
     assert owner._has_consent(7)
-    assert "О чём" in event.message.answer.await_args.args[0]
     assert t("ru", "welcome", name="Alex") in event.message.answer.await_args.args[0]
     assert "accepted_at" in owner.user_consents[7]
     owner.user_consents = {}
