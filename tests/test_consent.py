@@ -1,10 +1,11 @@
 """Onboarding decisions must actually gate every Telegram feature."""
 
-from datetime import datetime
+import asyncio
+from datetime import datetime, timedelta
 from pathlib import Path
 import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from cryptography.fernet import Fernet
 import pytest
@@ -80,10 +81,16 @@ async def test_acceptance_opens_access_and_survives_restart(owner):
     await ConsentMiddleware(owner)(handler, event, {})
     assert owner._has_consent(7)
     assert t("ru", "welcome", name="Alex") in event.message.answer.await_args.args[0]
+    started = owner.user_meaning_last_time[7]
+    assert owner.user_meaning_enabled[7] is True
     assert "accepted_at" in owner.user_consents[7]
     owner.user_consents = {}
+    owner.user_meaning_last_time = {}
+    owner.user_meaning_enabled = {}
     owner._load_user_prefs()
     assert owner._has_consent(7)
+    assert owner.user_meaning_last_time[7] == started
+    assert owner.user_meaning_enabled[7] is True
     msg = message("let's talk")
     await ConsentMiddleware(owner)(handler, msg, {})
     handler.assert_awaited_once_with(msg, {})
@@ -112,6 +119,9 @@ async def test_failed_save_never_grants_access(owner):
     await ConsentMiddleware(owner)(AsyncMock(), event, {})
     assert not owner._has_consent(7)
     assert not owner.user_langs
+    assert not owner.user_meaning_enabled
+    assert not owner.user_meaning_last_time
+    assert not owner.user_meaning_history
     assert "Не получилось" in event.message.answer.await_args.args[0]
 
 
@@ -179,20 +189,89 @@ async def test_onboarding_does_not_depend_on_welcome_wording(owner, monkeypatch,
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("lang", ["ru", "en"])
-async def test_start_after_consent_keeps_welcome_and_daily_settings(owner, lang):
+async def test_start_after_consent_restarts_timer_without_sending(owner, lang):
     owner.user_langs[7] = lang
     await ConsentMiddleware(owner)(AsyncMock(), callback(), {})
     owner._check_and_send_daily_meaning = AsyncMock()
+    owner.user_meaning_last_time[7] = datetime.now() - timedelta(hours=23)
+    owner.user_meaning_history[7] = ["old"]
+    owner.user_meaning_count[7] = 3
     msg = message("/start", lang=lang)
     msg.from_user.username = None
 
     async def start_handler(event, data):
         await owner._handle_start(event)
 
+    before = datetime.now()
     await ConsentMiddleware(owner)(start_handler, msg, {})
     assert msg.answer.await_args.args[0] == t(lang, "welcome", name="Alex")
+    msg.answer.assert_awaited_once()
     assert owner.user_meaning_enabled[7] is True
-    owner._check_and_send_daily_meaning.assert_awaited_once_with(7, 7)
+    assert before <= owner.user_meaning_last_time[7] <= datetime.now()
+    assert owner.user_meaning_history[7] == ["old"]
+    assert owner.user_meaning_count[7] == 3
+    owner._check_and_send_daily_meaning.assert_not_awaited()
+    saved_time = owner.user_meaning_last_time[7]
+    owner.user_meaning_last_time = {}
+    owner._load_user_prefs()
+    assert owner.user_meaning_last_time[7] == saved_time
+
+
+@pytest.mark.asyncio
+async def test_start_preserves_daily_opt_out(owner):
+    await ConsentMiddleware(owner)(AsyncMock(), callback(), {})
+    owner.user_meaning_enabled[7] = False
+    msg = message()
+    msg.from_user.username = None
+    await owner._handle_start(msg)
+    assert owner.user_meaning_enabled[7] is False
+    await owner._check_and_send_daily_meaning(7, 7)
+    owner.bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_daily_meaning_waits_24_hours_after_start(owner):
+    await ConsentMiddleware(owner)(AsyncMock(), callback(), {})
+    msg = message()
+    msg.from_user.username = None
+    owner.user_meaning_last_time[7] = datetime.now() - timedelta(days=2)
+    await owner._handle_start(msg)
+    therapist = SimpleNamespace(generate_response=Mock(return_value="A thought"))
+    owner._get_therapist = Mock(return_value=therapist)
+    await owner._check_and_send_daily_meaning(7, 7)
+    therapist.generate_response.assert_not_called()
+    owner.bot.send_message.assert_not_awaited()
+
+    owner.user_meaning_last_time[7] -= timedelta(hours=24)
+    await owner._check_and_send_daily_meaning(7, 7)
+    therapist.generate_response.assert_called_once()
+    owner.bot.send_message.assert_awaited_once()
+    assert owner.user_meaning_count[7] == 1
+
+
+@pytest.mark.asyncio
+async def test_start_restarts_timer_after_inflight_daily_generation(owner):
+    await ConsentMiddleware(owner)(AsyncMock(), callback(), {})
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def daily(user_id, chat_id):
+        started.set()
+        await release.wait()
+        owner.user_meaning_last_time[user_id] = datetime.now() - timedelta(hours=1)
+
+    owner._send_daily_meaning_if_due = daily
+    task = asyncio.create_task(owner._check_and_send_daily_meaning(7, 7))
+    await started.wait()
+    msg = message()
+    msg.from_user.username = None
+    start_task = asyncio.create_task(owner._handle_start(msg))
+    await asyncio.sleep(0)
+    assert not start_task.done()
+    before = datetime.now()
+    release.set()
+    await asyncio.gather(task, start_task)
+    assert owner.user_meaning_last_time[7] >= before
 
 
 @pytest.mark.asyncio

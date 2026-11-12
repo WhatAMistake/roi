@@ -1440,10 +1440,15 @@ class TelegramTherapistBot:
         async def handle_message(message: types.Message):
             await self._ordered_message(message, self._handle_message)
     
+    def _restart_daily_meaning_timer(self, user_id: int):
+        """Start a new interval without overriding an existing opt-out or history."""
+        self.user_meaning_enabled.setdefault(user_id, True)
+        self.user_meaning_history.setdefault(user_id, [])
+        self.user_meaning_last_time[user_id] = datetime.now()
+
     async def _handle_start(self, message: types.Message):
         """Обработка /start."""
         user_id = message.from_user.id
-        chat_id = message.chat.id
         user_name = message.from_user.first_name
         
         # Сбрасываем состояние
@@ -1471,24 +1476,14 @@ class TelegramTherapistBot:
             else:
                 self.user_langs[user_id] = DEFAULT_LANG
 
-        # Enable daily meanings by default for new users only
-        # Do NOT reset existing users' meaning data to preserve timestamps and counters
-        if user_id not in self.user_meaning_enabled:
-            self.user_meaning_enabled[user_id] = True
-            from datetime import datetime, timedelta
-            self.user_meaning_last_time[user_id] = datetime.now() - timedelta(hours=25)
-            # Initialize empty history for new users only
-            self.user_meaning_history[user_id] = []
-
-
-        # persist preference
-        try:
-            self._save_user_prefs(force=True)
-        except Exception:
-            pass
-
-        # Immediate meaning for new users
-        await self._check_and_send_daily_meaning(user_id, chat_id)
+        # Serialize against a daily generation already in progress, so it cannot
+        # overwrite the newly started interval.
+        async with self._get_user_lock(user_id):
+            self._restart_daily_meaning_timer(user_id)
+            try:
+                self._save_user_prefs(force=True)
+            except Exception:
+                pass
 
         # If session exists, update therapist language and reload prompt
         if user_id in self.sessions:
@@ -2537,7 +2532,8 @@ class TelegramTherapistBot:
         """Check if it's time to send a daily meaning and send it."""
         async with user_activity(self, user_id) as allowed:
             if allowed:
-                await self._send_daily_meaning_if_due(user_id, chat_id)
+                async with self._get_user_lock(user_id):
+                    await self._send_daily_meaning_if_due(user_id, chat_id)
 
     async def _send_daily_meaning_if_due(self, user_id: int, chat_id: int):
         if not self._has_consent(user_id) or not self.user_meaning_enabled.get(user_id, False):

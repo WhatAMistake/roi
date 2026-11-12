@@ -124,6 +124,16 @@ class ConsentMiddleware:
                 self.owner.user_consents[user.id] = record
                 previous_lang = self.owner.user_langs.get(user.id)
                 self.owner.user_langs[user.id] = lang
+                # The first /start is intercepted by consent, so start its
+                # daily interval here, in the same durable write as consent.
+                meaning_maps = (
+                    self.owner.user_meaning_enabled,
+                    self.owner.user_meaning_history,
+                    self.owner.user_meaning_last_time,
+                )
+                missing = object()
+                previous_meaning = [values.get(user.id, missing) for values in meaning_maps]
+                self.owner._restart_daily_meaning_timer(user.id)
                 # Consent is not subject to the ordinary preference-save throttle.
                 if self.owner._save_user_prefs(force=True) is not True:
                     self.owner.user_consents.pop(user.id, None)
@@ -131,6 +141,11 @@ class ConsentMiddleware:
                         self.owner.user_langs.pop(user.id, None)
                     else:
                         self.owner.user_langs[user.id] = previous_lang
+                    for values, previous in zip(meaning_maps, previous_meaning):
+                        if previous is missing:
+                            values.pop(user.id, None)
+                        else:
+                            values[user.id] = previous
                     await message.answer(t(lang, "consent_save_failed"))
                     return
                 from telegram_bot import get_main_keyboard
