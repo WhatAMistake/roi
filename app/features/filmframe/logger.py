@@ -3,6 +3,8 @@
 import json
 import logging
 import os
+import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -12,6 +14,7 @@ logger = logging.getLogger("filmframe.logger")
 # Log file path
 LOG_DIR = Path(__file__).parent.parent.parent.parent / "data"
 FILM_FRAME_LOG_FILE = LOG_DIR / "film_frame_runs.jsonl"
+_log_lock = threading.RLock()
 
 
 def log_run(
@@ -47,9 +50,10 @@ def log_run(
     }
 
     try:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        with open(FILM_FRAME_LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        with _log_lock:
+            FILM_FRAME_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(FILM_FRAME_LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception as e:
         logger.error(f"Failed to write film_frame_runs log: {e}")
 
@@ -59,21 +63,52 @@ def trim_old_logs(retention_days: int = 90) -> None:
 
     This mirrors the existing user data retention lifecycle.
     """
-    if not FILM_FRAME_LOG_FILE.exists():
-        return
+    with _log_lock:
+        if not FILM_FRAME_LOG_FILE.exists():
+            return
+        cutoff = datetime.now().timestamp() - (retention_days * 86400)
+        try:
+            lines = FILM_FRAME_LOG_FILE.read_text(encoding="utf-8").strip().split("\n")
+            kept = []
+            for line in lines:
+                try:
+                    record = json.loads(line)
+                    ts = datetime.fromisoformat(record.get("timestamp", ""))
+                    if ts.timestamp() >= cutoff:
+                        kept.append(line)
+                except Exception:
+                    kept.append(line)
+            FILM_FRAME_LOG_FILE.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+        except Exception as e:
+            logger.error(f"Failed to trim film_frame_runs logs: {e}")
 
-    cutoff = datetime.now().timestamp() - (retention_days * 86400)
-    try:
-        lines = FILM_FRAME_LOG_FILE.read_text(encoding="utf-8").strip().split("\n")
+
+def delete_user(user_id: int) -> None:
+    """Atomically filter a user's records; fail closed on unrecognizable lines."""
+    with _log_lock:
+        if not FILM_FRAME_LOG_FILE.exists():
+            return
+        lines = FILM_FRAME_LOG_FILE.read_text(encoding="utf-8").splitlines()
         kept = []
         for line in lines:
-            try:
-                record = json.loads(line)
-                ts = datetime.fromisoformat(record.get("timestamp", ""))
-                if ts.timestamp() >= cutoff:
-                    kept.append(line)
-            except Exception:
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if not isinstance(record, dict) or "user_id" not in record:
+                raise ValueError("Unrecognizable film-frame record")
+            if str(record["user_id"]) != str(user_id):
                 kept.append(line)
-        FILM_FRAME_LOG_FILE.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
-    except Exception as e:
-        logger.error(f"Failed to trim film_frame_runs logs: {e}")
+        temp = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=FILM_FRAME_LOG_FILE.parent,
+                prefix=".film-frame-", suffix=".tmp", delete=False,
+            ) as handle:
+                temp = handle.name
+                handle.write("\n".join(kept) + ("\n" if kept else ""))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp, FILM_FRAME_LOG_FILE)
+        finally:
+            if temp and os.path.exists(temp):
+                os.unlink(temp)

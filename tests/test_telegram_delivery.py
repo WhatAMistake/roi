@@ -107,7 +107,7 @@ async def test_partial_long_delivery_is_the_history(owner):
 
 
 @pytest.mark.asyncio
-async def test_remarque_uses_context_and_analysis_model_without_mutation(owner):
+async def test_remarque_uses_context_and_analysis_model_and_saves_delivered_result(owner):
     therapist = Therapist([])
     therapist.history = [tb.Message(role="user", content="A quiet day")]
     therapist.generate_response = Mock(return_value="A quiet moment.")
@@ -117,7 +117,7 @@ async def test_remarque_uses_context_and_analysis_model_without_mutation(owner):
     assert "A quiet day" in args[0]
     assert kwargs["temporary_system_instruction"] == "system"
     assert kwargs["use_analysis_model"] is True
-    assert [m.content for m in therapist.history] == ["A quiet day"]
+    assert [m.content for m in therapist.history] == ["A quiet day", "Remarque:\n\nA quiet moment."]
 
 
 @pytest.mark.asyncio

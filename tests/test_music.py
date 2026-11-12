@@ -202,7 +202,7 @@ async def test_category_buttons_are_single_use_and_recorded(setup_music):
     await asyncio.gather(feature.callback(callback), feature.callback(callback))
     assert owner.bot.send_audio.await_count == 1
     assert feature.store().sent(7)
-    assert therapist.history[0].content == "Death"
+    assert len(therapist.history) == 1
     assert "Artist" in therapist.history[-1].content
     assert callback.answer.await_args.args[0] == "This button has expired."
 def test_initiative_cooldown_survives_session_reset(setup_music):
@@ -234,7 +234,7 @@ async def test_command_without_context_asks_for_selection(setup_music):
     await feature.command(msg)
     owner.bot.send_audio.assert_not_awaited()
     assert msg.answer.await_args.kwargs["reply_markup"].inline_keyboard[0][0].text == "Death"
-    assert therapist.history[0].content == "/music"
+    assert therapist.history == []
 
 
 @pytest.mark.asyncio
@@ -325,7 +325,7 @@ async def test_localized_caption_in_real_delivery_paths(setup_music, monkeypatch
     assert sent["title"] == track["title"] and sent["performer"] == track["artist"]
     assert sent["parse_mode"] is None
     assert feature.store().sent(7) == {track["id"]}
-    assert therapist.history[-1].content == f"{expected} [Artist — Title 0]"
+    assert therapist.history[-1].content == f"{expected} [Artist — Title 0; {music.LABELS[lang]['death']}]"
 
 
 @pytest.mark.asyncio

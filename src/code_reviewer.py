@@ -779,9 +779,12 @@ def _model_json(therapist, system: str, content: str, validator, attempts: int =
         except TimeoutError:
             last_error = "TimeoutError: LLM request timed out"
             continue
-        except Exception:
+        except Exception as exc:
             # Provider exceptions may include prompts, credentials or response bodies.
             last_error = "LLM request failed"
+            status = getattr(exc, "status_code", None)
+            if type(status) is int and 400 <= status <= 599:
+                last_error += f" (HTTP {status})"
             continue
         try:
             if not getattr(response, "choices", None):
@@ -1136,6 +1139,25 @@ class UpdateCache:
 
     def pending(self) -> Optional[dict]:
         return self._read().get(_UPDATE_STATE_KEY, {}).get("pending")
+
+    def delete_recipient(self, user_id: int) -> None:
+        """Remove a recipient from pending and historical update broadcasts."""
+        with self._lock:
+            data = self._read()
+            state = data.get(_UPDATE_STATE_KEY)
+            if not state:
+                return
+            changed = False
+            entries = list(state.get("history", []))
+            if state.get("pending"):
+                entries.append(state["pending"])
+            for entry in entries:
+                recipients = entry.get("recipients", {})
+                if str(user_id) in recipients:
+                    del recipients[str(user_id)]
+                    changed = True
+            if changed:
+                self._write(data)
 
     def update(self, pending: dict) -> None:
         with self._lock:

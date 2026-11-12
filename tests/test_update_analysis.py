@@ -266,6 +266,17 @@ def test_errors_never_include_model_output_or_provider_exception(tmp_path, capsy
     assert secret not in result["reason"] + str(result["analysis"]["failures"]) + capsys.readouterr().out
 
 
+def test_provider_status_is_reported_without_exception_details(tmp_path):
+    cache, draft = setup_change(tmp_path, "old text\n", "new text\n")
+    model = mock_therapist()
+    error = RuntimeError("private provider response")
+    error.status_code = 429
+    model.client.chat.completions.create.side_effect = error
+    result = cache.generate(model, draft)
+    assert "LLM request failed (HTTP 429)" in result["reason"]
+    assert "private provider response" not in result["reason"]
+
+
 def test_malformed_json_diagnostic_does_not_include_model_text(tmp_path):
     cache, draft = setup_change(tmp_path, "old text\n", "new text\n")
     model = mock_therapist()

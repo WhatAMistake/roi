@@ -132,6 +132,9 @@ async def handle_ff_describe(bot_instance, message: types.Message, text: str) ->
             _ff_key(lang, "ff_scene_ready", preview=ff["preview"]),
             reply_markup=get_preview_keyboard(lang),
         )
+        if callable(getattr(bot_instance, "_remember_dialogue", None)):
+            bot_instance._remember_dialogue(user_id, [("user", text), ("assistant", ff["preview"])],
+                                           getattr(message, "message_id", None))
     finally:
         _pop_message_queue(bot_instance, user_id)
 
@@ -243,6 +246,9 @@ async def _apply_edit_and_preview(bot_instance, message: types.Message,
             _ff_key(lang, "ff_scene_ready", preview=ff["preview"]),
             reply_markup=get_preview_keyboard(lang),
         )
+        if callable(getattr(bot_instance, "_remember_dialogue", None)):
+            bot_instance._remember_dialogue(user_id, [("user", edit_text), ("assistant", ff["preview"])],
+                                           getattr(message, "message_id", None))
     finally:
         if pop_queue:
             _pop_message_queue(bot_instance, user_id)
@@ -303,6 +309,8 @@ async def _do_generate(bot_instance, message: types.Message, pop_queue: bool = T
             else:
                 raise RuntimeError("No image data in response")
 
+            if callable(getattr(bot_instance, "_remember_dialogue", None)):
+                bot_instance._remember_dialogue(user_id, [("assistant", "[Generated film-frame image; unverified scene preview] " + ff.get("preview", ""))])
             record_usage(user_id, admin_id=getattr(bot_instance, "admin_id", 0))
             log_run(
                 user_id=user_id,

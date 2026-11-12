@@ -135,7 +135,6 @@ class Music:
             "и я поделюсь одной из композиций. Каждую я отправляю только один раз."
         )
         await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-        self.remember(uid, "assistant", text)
 
     async def command(self, message):
         uid = message.from_user.id
@@ -159,7 +158,6 @@ class Music:
                 if store:
                     store.invalidate_buttons(uid)
                 # Explicit /music never analyzes dialogue or consumes an LLM call.
-                self.remember(uid, "user", "/music")
                 await self.choose(message, uid)
             except Exception as exc:
                 LOG.warning("Music command failed: type=%s", type(exc).__name__)
@@ -226,7 +224,7 @@ class Music:
                 self.store().save_file_id(track["id"], fingerprint, audio_result.file_id)
         except Exception as exc:
             LOG.warning("Music file cache failed: type=%s", type(exc).__name__)
-        self.remember(uid, "assistant", f"{caption} [{track['artist']} — {track['title']}]")
+        self.remember(uid, "assistant", f"{caption} [{track['artist']} — {track['title']}; {LABELS[lang][category]}]")
         return True
 
     async def callback(self, callback):
@@ -244,7 +242,6 @@ class Music:
                     await callback.message.edit_reply_markup(reply_markup=None)
                 except Exception:
                     pass
-                self.remember(uid, "user", LABELS[lang][action])
                 await self.send(callback.message, uid, action)
             except Exception as exc:
                 LOG.warning("Music callback failed: type=%s", type(exc).__name__)
@@ -255,7 +252,8 @@ class Music:
         if not self.enabled or not self.owner._has_consent(uid):
             return
         # Only consider occasional turns, without an extra LLM request on every message.
-        count = sum(1 for m in therapist.history if m.role == "user")
+        count = sum(1 for m in therapist.history
+                    if m.role == "user" and getattr(m, "music_counted", True))
         if count < 6 or count % 6:
             return
         try:

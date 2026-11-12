@@ -61,6 +61,21 @@ class Store:
     def user(self, uid):
         return hmac.new(self.key, ("roi-music-v1:" + str(uid)).encode(), hashlib.sha256).hexdigest()
 
+    def delete_user(self, uid):
+        """Delete only this user's HMAC-linked music records in one transaction."""
+        key = self.user(uid)
+        with self.connect() as db:
+            db.execute("PRAGMA secure_delete=ON")
+            db.execute("BEGIN IMMEDIATE")
+            for table in ("music_delivery", "music_button", "music_user"):
+                db.execute(f"DELETE FROM {table} WHERE user_key=?", (key,))
+        # In WAL mode old frames can contain earlier versions of deleted rows.
+        with self.connect() as db:
+            if db.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal":
+                busy, _, _ = db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                if busy:
+                    raise RuntimeError("Music checkpoint was busy")
+
     def unavailable(self, uid):
         with self.connect() as db:
             return {r[0] for r in db.execute("SELECT track_id FROM music_delivery WHERE user_key=?", (self.user(uid),))}

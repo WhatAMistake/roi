@@ -21,6 +21,14 @@ LOCALES: Dict[str, Dict[str, str]] = {
         "consent_stale": "Эта кнопка уже устарела. Нажмите /start, откроется актуальное приглашение.",
         "consent_save_failed": "Не получилось сохранить ваш выбор. Пока начать не сможем — попробуйте нажать кнопку ещё раз чуть позже.",
         "consent_private": "Давайте продолжим в личном чате с Роем.",
+        "privacy_revoke_prompt": "Отозвать согласие и удалить доступные привязанные к вам данные беседы и настроек? Это действие нельзя отменить. Копии в Telegram, у внешних сервисов, в резервных копиях и технических журналах могут сохраниться.",
+        "privacy_revoke_yes": "Подтверждаю",
+        "privacy_revoke_no": "Вернуться",
+        "privacy_revoke_cancelled": "Отмена. Удаление не запускалось.",
+        "privacy_revoke_stale": "Эта кнопка больше не действует. Используйте /privacy revoke ещё раз.",
+        "privacy_revoke_busy": "Удаление ещё не завершено. Дождитесь результата или повторите /privacy revoke.",
+        "privacy_revoke_failed": "Не удалось завершить удаление всех данных. Общение приостановлено; пожалуйста, повторите /privacy revoke позже.",
+        "privacy_revoke_done": "Согласие отозвано, доступные привязанные к вам данные приложения удалены. Для новой беседы потребуется снова дать согласие. Копии в Telegram, у внешних сервисов, в резервных копиях и технических журналах могут сохраняться.",
         "consent_details": (
             f"Согласие на обработку данных для работы бота «Рой»\nВерсия: {CONSENT_VERSION}\n\n"
             "Нажимая «Да, давай начнём», я подтверждаю, что мне исполнилось 18 лет, и соглашаюсь на обработку отправленных мной сообщений и данных Telegram создателем бота для подготовки ответов и работы выбранных функций.\n\n"
@@ -31,6 +39,7 @@ LOCALES: Dict[str, Dict[str, str]] = {
             "Выбор добровольный. При отказе разговорные функции недоступны; к выбору можно вернуться через /start. /reset сбрасывает разговорный контекст, но не удаляет все данные и внешние копии. Это согласие не даёт отдельного разрешения на публикацию переписки или формирование исследовательского датасета.\n\n"
             "Не отправляйте документы, данные других людей и сведения, которые не готовы передать внешним сервисам. Рой не заменяет специалиста и не является экстренной службой.\n\n"
             "Это краткое описание текущей работы бота и фиксация выбора при подключении, а не подтверждение полного соответствия 152-ФЗ или письменное согласие на специальные категории данных.\n"
+            "\nЧтобы отозвать согласие и запросить удаление доступных привязанных к вам данных бота, используйте /privacy revoke и подтвердите действие. Копии в Telegram, у внешних сервисов, в резервных копиях и технических журналах могут сохраниться.\n"
         ),
         "welcome": "\n\nЯ — Рой (или Рои), ИИ-собеседник в экзистенциальном подходе терапии. Помогаю исследовать вопросы смысла, свободы, одиночества и конечности жизни; впрочем, убеждён, что не каждому разговору нужен глубокий анализ.\n\nВы можете:\n• Просто писать мне о том, что вас беспокоит (можно и голосовым, отвечу им же)\n• Использовать анализ ассоциаций (/assoc) — это поможет понять актуальные темы\n• Использовать анализ истории (/lysis) — для глубокого разбора ситуации\n\n• Заглянуть в /help за остальными командами\n\nС чего начнём?",
         "help": "<b>Экзистенциальный терапевт Рой (Рои)</b>\n\nПо большей части я работаю в традиции Ирвина Ялома и Виктора Франкла.\n\n<b>Что я могу:</b>\n• Слушать и задавать вопросы\n• Фотографировать вас на плёнку\n• Помогать исследовать экзистенциальные темы\n• Анализировать ассоциации и подробные истории\n• Делиться музыкой — по запросу или когда это уместно\n• Анализировать изображения — пришлите фото для экзистенциального отклика\n\n<b>Команды:</b>\n/assoc — анализ ассоциаций\n/lysis — анализ истории\n\n<b>Для особых моментов:</b>\n/void — взгляд в пустоту\n/silence — минута молчания\n/meaning — случайный смысл момента\n/remarque — наблюдение по недавнему диалогу\n\n<b>Немного медиа:</b>\n/shoot — плёночное фото\n/music — как могли бы звучать данности\n\n<b>Служебные:</b>\n/reset — сбросить историю\n/switchlang — переключить язык (ru, en)\n/meaning_where — где смысл\n\n/privacy — о согласии и обработке данных\n/feedback — отправить отзыв разработчику\n\n<i>Важно: я не заменяю профессионального терапевта. Если вы в кризисе — обратитесь к специалисту, пожалуйста.</i>",        
@@ -105,6 +114,14 @@ LOCALES: Dict[str, Dict[str, str]] = {
         "consent_stale": "This button is out of date. Use /start for the current invitation.",
         "consent_save_failed": "I couldn’t save your choice. Let’s wait before starting—please try the button again a little later.",
         "consent_private": "Let’s continue in a private chat with Roi.",
+        "privacy_revoke_prompt": "Revoke consent and delete the accessible conversation data and settings linked to you? This cannot be undone. Copies held by Telegram, external services, backups and technical logs may remain.",
+        "privacy_revoke_yes": "Confirm",
+        "privacy_revoke_no": "Go back",
+        "privacy_revoke_cancelled": "Cancelled. Deletion was not started.",
+        "privacy_revoke_stale": "This button is no longer valid. Use /privacy revoke again.",
+        "privacy_revoke_busy": "Deletion is not yet complete. Please wait or retry /privacy revoke.",
+        "privacy_revoke_failed": "I couldn't finish deleting all data. Conversation is paused; please retry /privacy revoke later.",
+        "privacy_revoke_done": "Consent has been revoked and accessible application data linked to you deleted. A new conversation requires fresh consent. Copies held by Telegram, external services, backups and technical logs may remain.",
         "consent_details": (
             f"Consent to data processing for the Roi bot\nVersion: {CONSENT_VERSION}\n\n"
             "By choosing “Yes, let’s begin”, I confirm that I am at least 18 and consent to the bot creator processing my submitted messages and Telegram data to prepare replies and provide the features I use.\n\n"
@@ -115,6 +132,7 @@ LOCALES: Dict[str, Dict[str, str]] = {
             "My choice is voluntary. Declining keeps conversational features closed; /start lets me reconsider. /reset clears conversation context but is not complete deletion of all records or external copies. This consent does not separately authorize publishing conversations or building a research dataset.\n\n"
             "Do not send identity documents, information about other people or content you are unwilling to share with external services. Roi does not replace a professional and is not an emergency service.\n\n"
             "This is a short description of the bot’s current operation and an onboarding decision record, not a certification of 152-FZ compliance or written consent for special-category data.\n"
+            "\nTo revoke consent and request deletion of accessible bot data linked to you, use /privacy revoke and confirm. Copies held by Telegram, external services, backups and technical logs may remain.\n"
         ),
         "welcome": "\n\nI'm Roi, an existential AI-interlocutor. I help explore questions of meaning, freedom, loneliness, and mortality; though not every conversation needs a deep analysis.\n\nYou can:\n• Write to me about what's bothering you\n• Use association analysis (/assoc) to identify existential themes\n• Use story analysis (/lysis) — for a deep dive into your situation\n\n• Inspect the other options using /help.\n\nSo, where shall we start?",
         "help": "<b>Existential interlocutor Roi</b>\n\nI mostly work in the tradition of Irvin Yalom and Viktor Frankl.\n\n<b>What I can do:</b>\n• Listen and ask questions\n• Help explore existential themes\n• Analyze your associations and detailed stories\n• Share some pieces of my music collection (via /music)\n• Create film photos of your inner state — just describe it\n• Analyze images — send a photo for an existential response\n\n<b>Options:</b>\n/assoc — association analysis\n/lysis — analyze story\n\n<b>For special moments:</b>\n/void — gaze into the void\n/silence — minute of silence\n/meaning — random meaning of the moment\n/remarque — observation on recent dialogue\n\n<b>A bit of media:</b>\n/shoot — your state snapshot\n/music — how the givens may sound\n\n<b>Service:</b>\n/reset — reset history\n/switchlang — switch language (ru, en)\n/meaning_where — where is meaning\n\n/privacy — consent and data handling\n/feedback — send feedback to developer\n\n<i>Important: I'm not a replacement for a professional therapist. If you're in crisis — please, seek professional help.</i>",

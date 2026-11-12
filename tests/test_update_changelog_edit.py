@@ -52,6 +52,32 @@ def _msg(user_id: int = 42):
     return message
 
 
+@pytest.mark.parametrize(("reason", "failures", "expected"), [
+    ("Не удалось завершить анализ", ["file: LLM request failed (HTTP 429)"], "HTTP 429"),
+    ("Не удалось завершить анализ", ["file: TimeoutError: LLM request timed out"], "вовремя"),
+    ("Не удалось завершить анализ", ["file: ValueError: Invalid JSON response"], "некорректный результат"),
+    ("Не удалось создать changelog (ValueError: Incomplete model response)", [], "ответ модели оборван"),
+])
+def test_incomplete_notice_shows_safe_diagnostic(reason, failures, expected):
+    import telegram_bot as tb
+    pending = {"status": "review", "reason": reason + " secret-personal-data",
+               "analysis": {"missing": [], "failures": failures}}
+    notice = tb._update_review_notice("incomplete", pending)
+    assert expected in notice
+    assert "secret-personal-data" not in notice
+
+
+def test_incomplete_notice_keeps_skip_and_shows_model_failure():
+    import telegram_bot as tb
+    pending = {"id": "a" * 32, "status": "review", "reason": "Не удалось завершить анализ",
+               "analysis": {"missing": ["src/private.py"],
+                            "failures": ["src/private.py: LLM request failed (HTTP 400)"]}}
+    notice = tb._update_review_notice("incomplete", pending)
+    assert "снимки" in notice and "HTTP 400" in notice
+    assert f"/updates skip {'a' * 32}" in notice
+    assert "src/private.py" not in notice
+
+
 @pytest.mark.asyncio
 async def test_preview_contains_edit_option():
     bot, _ = _make_bot()

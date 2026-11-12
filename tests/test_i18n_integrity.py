@@ -95,11 +95,14 @@ def handler(owner, name):
 async def test_sticker_handler_uses_saved_language(lang):
     owner = tb.TelegramTherapistBot.__new__(tb.TelegramTherapistBot)
     owner.user_langs = {7: lang}
-    therapist = SimpleNamespace(generate_response=Mock(return_value="reply"))
+    owner.user_recent_messages = {}
+    owner._save_user_prefs = Mock(return_value=True)
+    therapist = SimpleNamespace(generate_response=Mock(return_value="reply"), history=[])
     owner._get_therapist = Mock(return_value=therapist)
     msg = SimpleNamespace(from_user=SimpleNamespace(id=7),
                           sticker=SimpleNamespace(emoji="🙂"), answer=AsyncMock())
     await handler(owner, "handle_sticker")(msg)
+    assert [m.content for m in therapist.history] == ["[Sticker: 🙂]", "reply"]
     prompt = t(lang, "sticker_prompt", emoji="🙂")
     therapist.generate_response.assert_called_once_with(
         prompt, temporary_system_instruction=prompt, use_analysis_model=True)
@@ -141,7 +144,9 @@ async def test_silence_handler_and_remaining_time(lang, monkeypatch):
 async def test_meaning_handler_uses_localized_prompt_and_system(lang):
     owner = tb.TelegramTherapistBot.__new__(tb.TelegramTherapistBot)
     owner.user_langs = {7: lang}
-    therapist = SimpleNamespace(generate_response=Mock(return_value="observation"))
+    therapist = SimpleNamespace(generate_response=Mock(return_value="observation"), history=[])
+    owner.user_recent_messages = {}
+    owner._save_user_prefs = Mock(return_value=True)
     owner._get_therapist = Mock(return_value=therapist)
     msg = SimpleNamespace(from_user=SimpleNamespace(id=7), answer=AsyncMock())
     await owner._handle_meaning(msg)
@@ -149,3 +154,4 @@ async def test_meaning_handler_uses_localized_prompt_and_system(lang):
         t(lang, "meaning_prompt"), temporary_system_instruction=t(lang, "meaning_system"),
         use_analysis_model=False)
     msg.answer.assert_awaited_once_with("🌱 observation")
+    assert therapist.history[-1].content == "🌱 observation"
