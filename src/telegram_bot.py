@@ -139,7 +139,7 @@ from code_reviewer import UpdateCache, _is_empty_changelog, _looks_technical
 from app.features.music import Music
 
 
-DEFAULT_LLM_MODEL = "deepseek-v4.1-flash"
+DEFAULT_LLM_MODEL = "gemini-4-hydrogen"
 logger = logging.getLogger(__name__)
 
 

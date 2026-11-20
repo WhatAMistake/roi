@@ -62,7 +62,7 @@ class ExistentialTherapistBot:
         language: str = "ru",
         ask_question_prob: Optional[float] = None,
     ):
-        self.model = model or os.getenv("OPENAI_MODEL") or "deepseek-v4.1-flash"
+        self.model = model or os.getenv("OPENAI_MODEL") or "gemini-4-hydrogen"
         self.analysis_model = analysis_model or os.getenv("OPENAI_ANALYSIS_MODEL") or self.model
 
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
@@ -71,9 +71,9 @@ class ExistentialTherapistBot:
         # Soft preference for question initiative (0.0 - 1.0), not a frequency
         # Can be overridden per-instance by passing `ask_question_prob`.
         try:
-            self.ask_question_prob = float(os.getenv("OPENAI_ASK_QUESTION_PROB", 0.37))
+            self.ask_question_prob = float(os.getenv("OPENAI_ASK_QUESTION_PROB", 0.73))
         except Exception:
-            self.ask_question_prob = 0.37
+            self.ask_question_prob = 0.73
 
         # Override by explicit parameter if provided
         if ask_question_prob is not None:
@@ -120,7 +120,7 @@ class ExistentialTherapistBot:
     def _default_prompt(self) -> str:
         """Fallback when the language-specific prompt is unavailable."""
         if self.language == "en":
-            return ("You are Roy, an AI conversational companion inspired by Yalom and Frankl, "
+            return ("You are Roi, an AI conversational companion inspired by Yalom and Frankl, "
                     "not Irvin Yalom or a replacement for professional care. Listen to the person's "
                     "experience, allow ordinary conversation and offer tentative interpretations. "
                     "Ask questions only when useful, including for immediate safety.")
