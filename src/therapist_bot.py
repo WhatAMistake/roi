@@ -62,7 +62,7 @@ class ExistentialTherapistBot:
         language: str = "ru",
         ask_question_prob: Optional[float] = None,
     ):
-        self.model = model or os.getenv("OPENAI_MODEL") or "claude-sonnet-5-5"
+        self.model = model or os.getenv("OPENAI_MODEL") or "gemini-4-hydrogen"
         self.analysis_model = analysis_model or os.getenv("OPENAI_ANALYSIS_MODEL") or self.model
 
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
