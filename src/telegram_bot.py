@@ -139,7 +139,7 @@ from code_reviewer import UpdateCache, _is_empty_changelog, _looks_technical
 from app.features.music import Music
 
 
-DEFAULT_LLM_MODEL = "gemini-4-hydrogen"
+DEFAULT_LLM_MODEL = "claude-sonnet-5-5"
 logger = logging.getLogger(__name__)
 
 
