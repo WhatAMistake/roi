@@ -69,6 +69,8 @@ class Store:
             db.execute("BEGIN IMMEDIATE")
             for table in ("music_delivery", "music_button", "music_user"):
                 db.execute(f"DELETE FROM {table} WHERE user_key=?", (key,))
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='music_bonus'").fetchone():
+                db.execute("DELETE FROM music_bonus WHERE user_key=?", (key,))
         # In WAL mode old frames can contain earlier versions of deleted rows.
         with self.connect() as db:
             if db.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal":
@@ -84,6 +86,20 @@ class Store:
         with self.connect() as db:
             return {r[0] for r in db.execute(
                 "SELECT track_id FROM music_delivery WHERE user_key=? AND status='sent'", (self.user(uid),))}
+
+    def claim_bonus(self, uid):
+        """Claim the separate bonus once, including across concurrent processes."""
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            # Create lazily so existing installations remain untouched until completion.
+            db.execute("CREATE TABLE IF NOT EXISTS music_bonus (user_key TEXT PRIMARY KEY)")
+            result = db.execute("INSERT OR IGNORE INTO music_bonus VALUES (?)", (self.user(uid),))
+            return result.rowcount == 1
+
+    def release_bonus(self, uid):
+        """Permit retry only when the bonus definitely was not sent."""
+        with self.connect() as db:
+            db.execute("DELETE FROM music_bonus WHERE user_key=?", (self.user(uid),))
 
     def may_offer(self, uid, cooldown):
         """Fast preflight; claim_initiative() is the authoritative atomic gate."""

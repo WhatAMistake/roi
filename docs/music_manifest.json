@@ -15,8 +15,8 @@
     "file": "death/Dirge   Death In Vegas.mp3",
     "title": "Dirge",
     "artist": "Death In Vegas",
-    "description": "Тяжелое, гипнотическое и неизбежное звучание",
-    "caption_ru": "Тяжелое, гипнотическое и неизбежное звучание",
+    "description": "Тяжёлое, гипнотическое, нарастающее звучание",
+    "caption_ru": "Тяжёлое, гипнотическое, нарастающее звучание",
     "caption_en": "Heavy, hypnotic sounds with a sense of inevitability."
   },
   {
@@ -35,9 +35,9 @@
     "file": "death/Kate Bush – Army Dreams.mp3",
     "title": "Army Dreams",
     "artist": "Kate Bush",
-    "description": "Тревожное, сновидческое и немного жуткое",
-    "caption_ru": "Тревожное, сновидческое и немного жуткое",
-    "caption_en": "Uneasy, dreamlike, and a little eerie."
+    "description": "Тревожное и сновидческое, историческое при том",
+    "caption_ru": "Тревожное и сновидческое, историческое при том",
+    "caption_en": "Uneasy, dreamlike, nevertheless, chained to historical events."
   },
   {
     "id": "death-05",
@@ -45,9 +45,9 @@
     "file": "death/manuel-barrueco-3-piezas-espanolas-no-2-passacaglia.mp3",
     "title": "3 Piezas españolas: No. 2, Passacaglia",
     "artist": "Manuel Barrueco",
-    "description": "Классическая испанская меланхолия",
-    "caption_ru": "Классическая испанская меланхолия",
-    "caption_en": "Classical Spanish melancholy."
+    "description": "Классическая испанская композиция-прощание",
+    "caption_ru": "Классическая испанская композиция-прощание",
+    "caption_en": "Classical Spanish goodbye-composition."
   },
   {
     "id": "death-06",
@@ -85,8 +85,8 @@
     "file": "freedom/Bathory – Ring Of Gold.mp3",
     "title": "Ring Of Gold",
     "artist": "Bathory",
-    "description": "Эпическое, фолк-металлическое ощущение простора",
-    "caption_ru": "Эпическое, фолк-металлическое ощущение простора",
+    "description": "Фолк-металлическое ощущение простора",
+    "caption_ru": "Фолк-металлическое ощущение простора",
     "caption_en": "An epic sense of open space, carried by folk metal."
   },
   {
@@ -95,8 +95,8 @@
     "file": "freedom/Placebo - Breathe Underwater (Slow).mp3",
     "title": "Breathe Underwater (Slow)",
     "artist": "Placebo",
-    "description": "Меланхоличное, эфирное парение и легкость",
-    "caption_ru": "Меланхоличное, эфирное парение и легкость",
+    "description": "Меланхоличное, эфирное парение и лёгкость",
+    "caption_ru": "Меланхоличное, эфирное парение и лёгкость",
     "caption_en": "Melancholic, ethereal weightlessness and ease."
   },
   {
@@ -115,9 +115,9 @@
     "file": "freedom/Sol Seppy - Love s Boy.mp3",
     "title": "Love's Boy",
     "artist": "Sol Seppy",
-    "description": "Хрупкое, эмоциональное и воздушное звучание",
-    "caption_ru": "Хрупкое, эмоциональное и воздушное звучание",
-    "caption_en": "Fragile, emotional, airy sounds."
+    "description": "Воздушное, спокойное звучание",
+    "caption_ru": "Воздушное, спокойное звучание",
+    "caption_en": "Emotional, airy sounds."
   },
   {
     "id": "freedom-06",
@@ -125,8 +125,8 @@
     "file": "freedom/Swetsi - летать.mp3",
     "title": "летать",
     "artist": "Swetsi",
-    "description": "Легкое русское инди, ощущение полета",
-    "caption_ru": "Легкое русское инди, ощущение полета",
+    "description": "Лёгкое русское инди, ощущение полёта",
+    "caption_ru": "Лёгкое русское инди, ощущение полёта",
     "caption_en": "Light Russian indie with a feeling of flight."
   },
   {
@@ -135,8 +135,8 @@
     "file": "freedom/Птица   Аукцыон.mp3",
     "title": "Птица",
     "artist": "Аукцыон",
-    "description": "Поэтичный, авангардный русский рок о свободе",
-    "caption_ru": "Поэтичный, авангардный русский рок о свободе",
+    "description": "Поэтичный, авангардный русский рок",
+    "caption_ru": "Поэтичный, авангардный русский рок",
     "caption_en": "Poetic, avant-garde Russian rock about freedom."
   },
   {
@@ -215,9 +215,9 @@
     "file": "meaninglessness/05 Your Body Betrays Your Degeneracy.mp3",
     "title": "Your Body Betrays Your Degeneracy",
     "artist": "Sea Power",
-    "description": "Странное, отстраненное звучание",
-    "caption_ru": "Странное, отстраненное звучание",
-    "caption_en": "An unusual, detached sound."
+    "description": "Странное, отстранённое звучание; тема Головомера из Disco Elysium",
+    "caption_ru": "Странное, отстранённое звучание; тема Головомера из Disco Elysium",
+    "caption_en": "An unusual, detached sound; Disco Elysium OST."
   },
   {
     "id": "meaninglessness-02",
@@ -275,8 +275,8 @@
     "file": "meaninglessness/uomi   liorinkarmic.mp3",
     "title": "uomi",
     "artist": "liorinkarmic",
-    "description": "Абстрактный, экспериментальный эмбиент",
-    "caption_ru": "Абстрактный, экспериментальный эмбиент",
-    "caption_en": "Abstract, experimental ambient music."
+    "description": "Эмбиент от малоизвестной русской исполнительницы",
+    "caption_ru": "Эмбиент от малоизвестной русской исполнительницы",
+    "caption_en": "Abstract ambient music."
   }
 ]

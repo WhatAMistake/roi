@@ -5,11 +5,20 @@ No audio is included in the repository. Set `ROI_MUSIC_DIR` to change it. Exampl
 
 ```
 /opt/roi-media/music/
+  roi_bonus.mp3
   death/first.mp3
   freedom/first.mp3
   isolation/first.mp3
   meaninglessness/first.mp3
 ```
+
+Place the separate bonus recording, хаос — Roi (Instrumental Slowed), at
+`/opt/roi-media/music/roi_bonus.mp3` (or
+`$ROI_MUSIC_DIR/roi_bonus.mp3` when overridden). Do not add it to
+the manifest. Once all 28 configured tracks have been confirmed sent, the next
+exhaustion message offers this recording once per user. A missing or invalid file
+is logged and can be retried on the next `/music`; an uncertain Telegram outcome
+is retained to prevent duplicates. `/reset` does not reset this history.
 
 Fill `docs/music_manifest.json` (or set `ROI_MUSIC_MANIFEST` to a protected external
 JSON file). Each of its 28 entries has a permanent `id`, `category`, relative `file`,

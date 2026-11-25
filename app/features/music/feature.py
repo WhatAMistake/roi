@@ -10,7 +10,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, Teleg
 from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.security import get_encryption_key
-from .catalogue import CATEGORIES, catalogue
+from .catalogue import CATEGORIES, MAX_BYTES, catalogue
 from .store import Store
 
 LOG = logging.getLogger(__name__)
@@ -33,6 +33,11 @@ COLLECTION_INTROS = {
         "isolation": "From my collection on loneliness.",
         "meaninglessness": "From my collection on meaninglessness.",
     },
+}
+BONUS_FILENAME = "roi_bonus.mp3"
+BONUS_TEXT = {
+    "ru": "А эту песню я оставил напоследок (именно в её честь меня назвали Роем).",
+    "en": "And I saved this song for last (it's the very song I was named Roi after).",
 }
 
 
@@ -116,7 +121,17 @@ class Music:
             all_sent = bool(configured) and all(x["id"] in sent for x in configured)
             text = ("My music is now fully yours. Thank you for being here." if lang == "en" else "Моя коллекция теперь вся у тебя. Спасибо, что был рядом.") if all_sent else (
                 "My music isn’t available just now." if lang == "en" else "Моя музыка сейчас недоступна.")
-            await message.answer(text)
+            bonus = all_sent and len(configured) == 28 and self.store().claim_bonus(uid)
+            if bonus:
+                text += " " + BONUS_TEXT[lang]
+            try:
+                await message.answer(text)
+            except Exception:
+                if bonus:
+                    self.store().release_bonus(uid)
+                raise
+            if bonus:
+                await self.send_bonus(uid)
             return
         token = self.store().button(uid)
         # Manual /music always shows all four existential givens. An exhausted
@@ -135,6 +150,34 @@ class Music:
             "и я поделюсь одной из композиций. Каждую я отправляю только один раз."
         )
         await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+    async def send_bonus(self, uid):
+        """Deliver the extra recording without changing the catalogue or its history."""
+        try:
+            root = self.directory.resolve()
+            path = (root / BONUS_FILENAME).resolve(strict=True)
+            if not path.is_relative_to(root) or not path.is_file() or not 0 < path.stat().st_size <= MAX_BYTES:
+                raise ValueError("invalid bonus file")
+            with path.open("rb") as source:
+                header = source.read(3)
+            if not (header == b"ID3" or (len(header) >= 2 and header[0] == 0xff and header[1] & 0xe0 == 0xe0)):
+                raise ValueError("invalid bonus MP3 header")
+        except (OSError, ValueError) as exc:
+            LOG.error("Music bonus file unavailable or invalid: type=%s", type(exc).__name__)
+            self.store().release_bonus(uid)
+            return
+        try:
+            result = await self.owner.bot.send_audio(
+                chat_id=uid, audio=FSInputFile(path), title="Roi (Instrumental Slowed)",
+                performer="хаос", parse_mode=None)
+            if not result:
+                raise RuntimeError("Telegram did not confirm delivery")
+        except (TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter) as exc:
+            LOG.warning("Music bonus delivery rejected: type=%s", type(exc).__name__)
+            self.store().release_bonus(uid)
+        except Exception as exc:
+            # As with regular tracks, retain the claim when delivery is uncertain.
+            LOG.warning("Music bonus delivery outcome uncertain: type=%s", type(exc).__name__)
 
     async def command(self, message):
         uid = message.from_user.id

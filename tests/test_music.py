@@ -68,6 +68,144 @@ def test_manifest_template_and_missing_library(tmp_path):
             assert len(music.COLLECTION_INTROS[lang][track["category"]] + " " + caption) <= 1024
 
 
+@pytest.fixture
+def complete_collection(setup_music, monkeypatch, tmp_path):
+    owner, feature, therapist, _, msg = setup_music
+    tracks = [
+        {"id": f"{category}-{i}", "category": category, "file": f"{category}/{i}.mp3",
+         "title": f"Title {i}", "artist": "Artist", "path": Path(__file__)}
+        for category in music.CATEGORIES for i in range(7)
+    ]
+    monkeypatch.setattr(music, "catalogue", lambda *args: (tracks, tracks))
+    feature.directory = tmp_path
+    return owner, feature, therapist, tracks, msg
+
+
+def mark_sent(store, uid, tracks):
+    for track in tracks:
+        assert store.reserve(uid, [track])
+        store.finish(uid, track["id"], True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lang,final", [
+    ("ru", "Моя коллекция теперь вся у тебя. Спасибо, что был рядом. "
+           "А эту песню я оставил напоследок (именно в её честь меня назвали Роем)."),
+    ("en", "My music is now fully yours. Thank you for being here. "
+           "And I saved this song for last (it's the very song I was named Roi after)."),
+])
+async def test_bonus_after_full_collection_once_and_after_message(complete_collection, lang, final):
+    owner, feature, therapist, tracks, msg = complete_collection
+    owner.user_langs[7] = lang
+    therapist._complete_text = Mock()
+    (feature.directory / music.BONUS_FILENAME).write_bytes(b"ID3test")
+    mark_sent(feature.store(), 7, tracks[:-1])
+    await feature.command(msg)
+    owner.bot.send_audio.assert_not_awaited()
+    assert msg.answer.await_args.kwargs["reply_markup"]
+    mark_sent(feature.store(), 7, tracks[-1:])
+    events = []
+    msg.answer.side_effect = lambda *args, **kwargs: events.append(("message", args[0]))
+    owner.bot.send_audio.side_effect = lambda **kwargs: (
+        events.append(("audio", kwargs)) or SimpleNamespace(audio=None))
+    await feature.command(msg)
+    assert events[0] == ("message", final)
+    assert events[1][0] == "audio"
+    sent = events[1][1]
+    assert sent["audio"].path == feature.directory / music.BONUS_FILENAME
+    assert (sent["chat_id"], sent["performer"], sent["title"]) == (7, "хаос", "Roi (Instrumental Slowed)")
+    assert len(feature.store().sent(7)) == len(feature.store().unavailable(7)) == 28
+    feature.store().reset_session(7)
+    restarted = music.Music(owner)
+    restarted.directory = feature.directory
+    await restarted.command(msg)
+    assert owner.bot.send_audio.await_count == 1
+    assert msg.answer.await_args.args[0] != final
+    therapist._complete_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_missing_bonus_is_logged_and_retryable(complete_collection, caplog):
+    owner, feature, _, tracks, msg = complete_collection
+    mark_sent(feature.store(), 7, tracks)
+    await feature.command(msg)
+    assert music.BONUS_TEXT["en"] in msg.answer.await_args.args[0]
+    assert "Music bonus file unavailable or invalid" in caplog.text
+    owner.bot.send_audio.assert_not_awaited()
+    (feature.directory / music.BONUS_FILENAME).write_bytes(b"ID3test")
+    await feature.command(msg)
+    assert owner.bot.send_audio.await_count == 1
+    assert len(feature.store().sent(7)) == 28
+
+
+@pytest.mark.asyncio
+async def test_last_track_then_exhausted_callback_delivers_bonus(complete_collection):
+    owner, feature, therapist, tracks, msg = complete_collection
+    therapist._complete_text = Mock()
+    (feature.directory / music.BONUS_FILENAME).write_bytes(b"ID3test")
+    mark_sent(feature.store(), 7, tracks[:-1])
+    await feature.command(msg)
+    button = next(button for row in msg.answer.await_args.kwargs["reply_markup"].inline_keyboard
+                  for button in row if button.callback_data.endswith(":meaninglessness"))
+    callback = SimpleNamespace(from_user=msg.from_user, message=msg,
+                               data=button.callback_data, answer=AsyncMock())
+    await feature.callback(callback)
+    assert owner.bot.send_audio.await_count == 1
+    assert len(feature.store().sent(7)) == 28
+    # The existing final message is shown on the next request, not on the last track.
+    await feature.command(msg)
+    assert owner.bot.send_audio.await_count == 2
+    assert music.BONUS_TEXT["en"] in msg.answer.await_args.args[0]
+    therapist._complete_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reserved_track_does_not_complete_collection(complete_collection):
+    owner, feature, _, tracks, msg = complete_collection
+    (feature.directory / music.BONUS_FILENAME).write_bytes(b"ID3test")
+    mark_sent(feature.store(), 7, tracks[:-1])
+    assert feature.store().reserve(7, tracks[-1:])
+    await feature.command(msg)
+    assert msg.answer.await_args.args[0] == "My music isn’t available just now."
+    owner.bot.send_audio.assert_not_awaited()
+
+
+def test_help_does_not_reveal_bonus():
+    from i18n import t
+    for lang in ("ru", "en"):
+        assert music.BONUS_TEXT[lang] not in t(lang, "help")
+        assert "Instrumental Slowed" not in t(lang, "help")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("uncertain", [False, True])
+async def test_bonus_send_failure_retry_policy(complete_collection, uncertain, caplog):
+    owner, feature, _, tracks, msg = complete_collection
+    mark_sent(feature.store(), 7, tracks)
+    (feature.directory / music.BONUS_FILENAME).write_bytes(b"ID3test")
+    owner.bot.send_audio.side_effect = (
+        TimeoutError() if uncertain else
+        TelegramBadRequest(method=SendAudio(chat_id=7, audio="x"), message="rejected"))
+    await feature.command(msg)
+    assert "Music bonus delivery" in caplog.text
+    owner.bot.send_audio.side_effect = None
+    await feature.command(msg)
+    assert owner.bot.send_audio.await_count == (1 if uncertain else 2)
+    assert len(feature.store().sent(7)) == 28
+
+
+def test_bonus_claim_is_atomic_and_deleted_with_user(tmp_path):
+    path = tmp_path / "bonus.sqlite"
+    store = music.Store(path, "key")
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        claims = list(pool.map(lambda _: music.Store(path, "key").claim_bonus(7), range(20)))
+    assert sum(claims) == 1
+    assert store.claim_bonus(8)
+    store.delete_user(7)
+    assert store.claim_bonus(7)
+    assert not store.claim_bonus(8)
+
+
 def test_catalogue_preserves_optional_captions(tmp_path):
     (tmp_path / "song.mp3").write_bytes(b"ID3test")
     track = {"id": "one", "category": "isolation", "file": "song.mp3",
