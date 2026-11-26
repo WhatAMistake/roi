@@ -1,5 +1,7 @@
 # Рой (Roi) — диалоговый ИИ для Telegram
 
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/WhatAMistake/badge.svg)](https://hub.xerj.org/contributors/WhatAMistake)
+
 Диалоговый ассистент для экзистенциальной терапии в традиции Ирвина Ялома и Виктора Франкла.
 Помогает исследовать темы смысла, свободы, одиночества и конечности жизни.
 
@@ -227,5 +229,3 @@ python -m pytest tests/
 ## Лицензия
 
 Стандартный MIT. Детальнее см. [LICENSE](LICENSE).
-
-[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/WhatAMistake/badge.svg)](https://hub.xerj.org/contributors/WhatAMistake)
